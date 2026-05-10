@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { extractIFModel } from './parser/if-extractor.js';
 import { validateGUIModel } from './validator/engine.js';
-import { renderGUIBase64 } from './renderer/gui-drawer.js';
+import { renderGUI } from './renderer/gui-drawer.js';
 import { getItemAtlasEntries } from './renderer/item-atlas.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -52,9 +52,10 @@ server.registerTool(
     inputSchema: z.object({
       code: z.string().describe('Java source code containing IF GUI definitions'),
       scale: z.number().min(1).max(4).optional().describe('Scale factor for the output image (1-4)'),
+      texturePath: z.string().optional().describe('Optional local path to a Minecraft resource pack or texture folder. Supports assets/minecraft/textures/item and block PNGs.'),
     }),
   },
-  async ({ code, scale }) => {
+  async ({ code, scale, texturePath }) => {
     const parsed = extractIFModel(code);
     if (!parsed.gui) {
       return {
@@ -62,14 +63,22 @@ server.registerTool(
       };
     }
     try {
-      const base64 = await renderGUIBase64(parsed.gui, scale ?? 2);
+      const rendered = await renderGUI(parsed.gui, { scale: scale ?? 2, texturePath });
+      const meta = rendered.metadata;
+      const notes = [
+        `Rendered ${meta.guiType} GUI "${meta.title}" (${meta.columns}x${meta.rows}) with ${meta.renderedItems} item(s).`,
+        meta.texturedItems > 0 ? `Loaded ${meta.texturedItems} item texture(s).` : undefined,
+        meta.fallbackItems.length > 0 ? `Fallback icons: ${meta.fallbackItems.join(', ')}` : undefined,
+        meta.unknownMaterials.length > 0 ? `Unknown atlas materials: ${meta.unknownMaterials.join(', ')}` : undefined,
+      ].filter(Boolean).join('\n');
       return {
         content: [
           {
             type: 'image' as const,
-            data: base64,
+            data: rendered.base64,
             mimeType: 'image/png',
           },
+          { type: 'text' as const, text: notes },
         ],
       };
     } catch (err: any) {
@@ -123,7 +132,7 @@ server.registerTool(
 function generateLayoutSuggestions(gui: any, issues: any[]): string {
   const suggestions: string[] = [];
 
-  if (gui.rows > 6) {
+  if (gui.type === 'chest' && gui.rows > 6) {
     suggestions.push('- GUI has more than 6 rows. Chest GUIs in Minecraft are limited to 6 rows.');
   }
 

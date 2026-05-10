@@ -15,12 +15,24 @@ export function extractIFModel(source: string): ParsedResult {
 
 function extractGui(source: string, issues: ValidationIssue[]): GUIModel | null {
   // Detect GUI type and basic properties
-  const guiMatch = source.match(/new\s+(ChestGui|HopperGui|DropperGui|DispenserGui)\s*\(\s*(\d+)\s*,\s*([^)]+)\)/);
+  const guiMatch = source.match(/new\s+(ChestGui|HopperGui|DropperGui|DispenserGui)\s*\(\s*([^)]*)\)/);
   if (!guiMatch) return null;
 
-  const guiType = guiMatch[1].toLowerCase() as GUIModel['type'];
-  const rows = parseInt(guiMatch[2], 10);
-  let title = extractStringLiteral(guiMatch[3]) ?? 'Untitled';
+  const guiClass = guiMatch[1];
+  const guiType = guiClass.replace(/Gui$/, '').toLowerCase() as GUIModel['type'];
+  const args = splitTopLevelArgs(guiMatch[2]);
+  let rows = defaultRowsForGui(guiType);
+  let titleArg = args[0];
+
+  if (guiType === 'chest' && /^\d+$/.test(args[0]?.trim() ?? '')) {
+    rows = parseInt(args[0], 10);
+    titleArg = args[1];
+  } else if (/^\d+$/.test(args[0]?.trim() ?? '')) {
+    rows = parseInt(args[0], 10);
+    titleArg = args[1];
+  }
+
+  let title = extractStringLiteral(titleArg ?? '') ?? 'Untitled';
 
   // Override title if setTitle is called
   const titleSetter = source.match(/\.(setTitle|title)\s*\(\s*([^)]+)\)/);
@@ -87,6 +99,47 @@ function extractGui(source: string, issues: ValidationIssue[]): GUIModel | null 
   return { type: guiType, rows, title, panes, orphanItems };
 }
 
+function defaultRowsForGui(type: GUIModel['type']): number {
+  if (type === 'hopper') return 1;
+  if (type === 'dropper' || type === 'dispenser') return 3;
+  return 1;
+}
+
+function splitTopLevelArgs(raw: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (const ch of raw) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      current += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') inString = !inString;
+    if (!inString) {
+      if (ch === '(' || ch === '[' || ch === '{') depth++;
+      if (ch === ')' || ch === ']' || ch === '}') depth--;
+      if (ch === ',' && depth === 0) {
+        args.push(current.trim());
+        current = '';
+        continue;
+      }
+    }
+    current += ch;
+  }
+
+  if (current.trim()) args.push(current.trim());
+  return args;
+}
+
 function buildPaneFromBlock(
   paneType: string,
   x: number,
@@ -119,16 +172,6 @@ function buildPaneFromBlock(
     while ((im = addItemRegex.exec(code)) !== null) {
       const item = extractGuiItem(im[1], issues);
       if (item) items.push(item);
-    }
-  }
-
-  // Also catch inline GuiItem constructions inside the block
-  const inlineItemRegex = /new\s+GuiItem\s*\(\s*([^)]+(?:\([^)]*\)[^)]*)*)\)/g;
-  let om: RegExpExecArray | null;
-  while ((om = inlineItemRegex.exec(code)) !== null) {
-    const item = extractGuiItem(om[1], issues);
-    if (item && !items.find((i) => i.material === item.material && i.displayName === item.displayName)) {
-      items.push(item);
     }
   }
 

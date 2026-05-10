@@ -8,6 +8,7 @@ This server lets AI models (Claude, ChatGPT, etc.) inspect IF GUI Java code befo
 
 - **Validate** IF code for syntax errors, layout issues, pane overlaps, and best practices
 - **Render** a visual PNG screenshot of how the GUI will look in-game
+- **Render with local textures** from bundled `assets/textures` or a resource pack when a `texturePath` is provided
 - **Analyze** UX layout and suggest improvements
 - **List** known Minecraft items to help pick correct `Material` names
 - **Docs** provide quick IF documentation snippets
@@ -53,7 +54,7 @@ Add to your `claude_desktop_config.json`:
 | Tool | Description |
 |------|-------------|
 | `validate_if_code` | Validates Java IF code and returns errors/warnings |
-| `render_gui` | Renders a PNG image of the GUI |
+| `render_gui` | Renders a PNG image of the GUI using bundled textures when available. Optional `texturePath` can point to an additional resource pack or texture folder |
 | `analyze_layout` | Provides UI/UX suggestions |
 | `list_items` | Lists Minecraft items (optionally filtered) |
 | `get_if_docs` | Returns IF documentation for a topic |
@@ -70,6 +71,25 @@ gui.addPane(pane);
 ```
 
 The tool returns a base64 PNG showing the chest GUI layout with item placeholders.
+
+### Optional resource pack textures
+
+By default, `render_gui` looks in this repository's `assets/textures` folder. It also accepts `texturePath` for an extra resource pack or texture folder. The renderer looks for PNGs in these layouts:
+
+```text
+assets/textures/item/diamond_sword.png
+assets/textures/block/stone.png
+<texturePath>/assets/minecraft/textures/item/diamond_sword.png
+<texturePath>/assets/minecraft/textures/block/stone.png
+<texturePath>/item/diamond_sword.png
+<texturePath>/block/stone.png
+<texturePath>/diamond_sword.png
+```
+
+If a texture is not found, the renderer falls back to generated pixel-style icons. This keeps the MCP usable without bundling Minecraft assets.
+For block materials, it also tries common vanilla suffixes such as `_side`, `_top`, `_front`, `_bottom`, and `_end`.
+
+The render response includes a short metadata text block after the image, including GUI type, size, rendered item count, loaded texture count, fallback materials, and unknown atlas materials.
 
 ## Tech Stack
 

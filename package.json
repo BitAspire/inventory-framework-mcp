@@ -6,6 +6,12 @@
   "bin": {
     "inventory-framework-mcp": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "assets",
+    "resources",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",

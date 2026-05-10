@@ -1,5 +1,5 @@
 export interface GUIModel {
-  type: 'chest' | 'hopper' | 'dispenser' | 'unknown';
+  type: 'chest' | 'hopper' | 'dropper' | 'dispenser' | 'unknown';
   rows: number;
   title: string;
   panes: PaneModel[];

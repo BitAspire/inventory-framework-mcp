@@ -1,10 +1,13 @@
 import { GUIModel, PaneModel, ValidationIssue } from '../parser/models.js';
+import { getAtlasEntry } from '../renderer/item-atlas.js';
 
 export function validateGUIModel(gui: GUIModel): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
-  // Rule: gui-rows-limit
-  if (gui.rows > 6) {
+  const columns = columnsForGui(gui);
+  const rows = rowsForGui(gui);
+
+  if (gui.type === 'chest' && gui.rows > 6) {
     issues.push({
       ruleId: 'gui-rows-limit',
       severity: 'error',
@@ -19,19 +22,19 @@ export function validateGUIModel(gui: GUIModel): ValidationIssue[] {
     const maxX = pane.x + pane.length;
     const maxY = pane.y + pane.height;
 
-    if (maxX > 9) {
+    if (maxX > columns) {
       issues.push({
         ruleId: 'pane-out-of-bounds',
         severity: 'error',
-        message: `Pane ${pane.type} exceeds horizontal grid (x=${pane.x}, length=${pane.length}).`,
+        message: `Pane ${pane.type} exceeds horizontal grid (x=${pane.x}, length=${pane.length}, gui columns=${columns}).`,
         location: `Pane at (${pane.x},${pane.y})`,
       });
     }
-    if (maxY > gui.rows) {
+    if (maxY > rows) {
       issues.push({
         ruleId: 'pane-out-of-bounds',
         severity: 'error',
-        message: `Pane ${pane.type} exceeds vertical grid (y=${pane.y}, height=${pane.height}, gui rows=${gui.rows}).`,
+        message: `Pane ${pane.type} exceeds vertical grid (y=${pane.y}, height=${pane.height}, gui rows=${rows}).`,
         location: `Pane at (${pane.x},${pane.y})`,
       });
     }
@@ -53,7 +56,6 @@ export function validateGUIModel(gui: GUIModel): ValidationIssue[] {
   }
 
   // Rule: unknown-material
-  // (item-atlas will be checked lazily at render time; here we only check empty material)
   const seen = new Set<string>();
   const allItems = [...gui.orphanItems, ...gui.panes.flatMap((p) => p.items)].filter((item) => {
     const key = `${item.material}-${item.displayName}-${item.slotX}-${item.slotY}`;
@@ -68,6 +70,13 @@ export function validateGUIModel(gui: GUIModel): ValidationIssue[] {
         severity: 'error',
         message: 'Item has no valid Material specified.',
         location: item.displayName || 'Unnamed item',
+      });
+    } else if (!getAtlasEntry(item.material)) {
+      issues.push({
+        ruleId: 'unknown-material',
+        severity: 'warning',
+        message: `Material ${item.material} is not in the local atlas. Rendering will use a generic fallback icon.`,
+        location: item.displayName || item.material,
       });
     }
   }
@@ -85,7 +94,7 @@ export function validateGUIModel(gui: GUIModel): ValidationIssue[] {
   }
 
   // Rule: empty-slot-waste
-  const guiSlots = gui.rows * 9;
+  const guiSlots = rows * columns;
   const usedSlots = occupied.size;
   if (usedSlots < guiSlots * 0.3 && gui.rows > 2) {
     issues.push({
@@ -97,6 +106,18 @@ export function validateGUIModel(gui: GUIModel): ValidationIssue[] {
   }
 
   return issues;
+}
+
+function columnsForGui(gui: GUIModel): number {
+  if (gui.type === 'hopper') return 5;
+  if (gui.type === 'dropper' || gui.type === 'dispenser') return 3;
+  return 9;
+}
+
+function rowsForGui(gui: GUIModel): number {
+  if (gui.type === 'hopper') return 1;
+  if (gui.type === 'dropper' || gui.type === 'dispenser') return 3;
+  return gui.rows;
 }
 
 function isInteractiveMaterial(mat: string): boolean {
