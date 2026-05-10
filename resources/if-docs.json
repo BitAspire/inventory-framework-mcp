@@ -1,0 +1,12 @@
+{
+  "gui": "GUIs are the main part of the framework and the entry point for every pane and inventory. Create a GUI with new ChestGui(rows, title). Rows must be between 1 and 6. Update the GUI after changes with gui.update(). Show it with gui.show(player).",
+  "panes": "Panes are sub-regions inside a GUI. Types: OutlinePane (fills border/area), StaticPane (bind items to exact slots), PaginatedPane (pages of items), PatternPane (uses a character pattern), MasonryPane (items fill left-to-right, top-to-bottom). Each pane has x, y, length (width in slots), height (rows).",
+  "outline_pane": "OutlinePane fills either the border or the entire area specified by (x, y, length, height). Use addItem(GuiItem) to place items. Items are placed starting from the top-left going right, wrapping to the next row.",
+  "static_pane": "StaticPane places items at exact slots. Use bindItem(slotX, slotY, GuiItem). slotX is 0-based column (0-8), slotY is 0-based row. Useful for buttons at fixed positions.",
+  "paginated_pane": "PaginatedPane splits items into pages. Navigation items (next/previous page) can be added. Set the page with setPage(int).",
+  "pattern_pane": "PatternPane uses a 2D character pattern to decide where items go. Each character maps to an item.",
+  "gui_item": "GuiItem wraps an ItemStack with a click action. Create with new GuiItem(ItemStack) or new GuiItem(ItemStack, event -> {}). You can also use ItemStackBuilder: new ItemStackBuilder(Material).setDisplayName(\"Name\").setLore(Arrays.asList(\"Line1\")).build().",
+  "xml": "GUIs and panes can be loaded from XML files. Example: <gui rows=\"5\" title=\"Shop\"><outlinepane x=\"0\" y=\"0\" length=\"9\" height=\"5\"><item id=\"diamond\"/></outlinepane></gui>. Load with ChestGui.load(this, inputStream).",
+  "slot": "A slot is one inventory cell. Chest GUIs have 9 columns. Row count is passed to the constructor (1-6). Total slots = rows * 9.",
+  "components": "IF provides pre-built components: Label, ToggleButton, CycleButton, PercentageBar, Slider, PagingButtons. These are special panes/items that provide interactive behavior."
+}

@@ -1,0 +1,185 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z } from 'zod';
+import { extractIFModel } from './parser/if-extractor.js';
+import { validateGUIModel } from './validator/engine.js';
+import { renderGUIBase64 } from './renderer/gui-drawer.js';
+import { getItemAtlasEntries } from './renderer/item-atlas.js';
+import * as fs from 'fs';
+import * as path from 'path';
+
+const ifDocsPath = path.resolve(process.cwd(), 'resources', 'if-docs.json');
+const ifDocs = JSON.parse(fs.readFileSync(ifDocsPath, 'utf-8')) as Record<string, string>;
+
+const server = new McpServer({
+  name: 'inventory-framework-mcp',
+  version: '0.1.0',
+});
+
+server.registerTool(
+  'validate_if_code',
+  {
+    description: 'Validate IF (Inventory Framework) Java GUI code for syntax errors, layout issues, and best practices.',
+    inputSchema: z.object({
+      code: z.string().describe('Java source code containing IF GUI definitions'),
+    }),
+  },
+  async ({ code }) => {
+    const parsed = extractIFModel(code);
+    const validationIssues = parsed.gui ? validateGUIModel(parsed.gui) : [];
+    const allIssues = [...parsed.issues, ...validationIssues];
+
+    if (allIssues.length === 0) {
+      return {
+        content: [{ type: 'text' as const, text: 'No issues found. GUI looks good!' }],
+      };
+    }
+
+    const lines = allIssues.map(
+      (i) => `[${i.severity.toUpperCase()}] ${i.ruleId}: ${i.message}${i.location ? ` (${i.location})` : ''}`
+    );
+
+    return {
+      content: [{ type: 'text' as const, text: lines.join('\n') }],
+    };
+  }
+);
+
+server.registerTool(
+  'render_gui',
+  {
+    description: 'Render a GUI screenshot from IF Java code. Returns a PNG image.',
+    inputSchema: z.object({
+      code: z.string().describe('Java source code containing IF GUI definitions'),
+      scale: z.number().min(1).max(4).optional().describe('Scale factor for the output image (1-4)'),
+    }),
+  },
+  async ({ code, scale }) => {
+    const parsed = extractIFModel(code);
+    if (!parsed.gui) {
+      return {
+        content: [{ type: 'text' as const, text: 'Could not parse GUI from code.' }],
+      };
+    }
+    try {
+      const base64 = await renderGUIBase64(parsed.gui, scale ?? 2);
+      return {
+        content: [
+          {
+            type: 'image' as const,
+            data: base64,
+            mimeType: 'image/png',
+          },
+        ],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: 'text' as const, text: `Rendering failed: ${err.message}` }],
+      };
+    }
+  }
+);
+
+server.registerTool(
+  'analyze_layout',
+  {
+    description: 'Analyze the UI/UX layout of an IF GUI and suggest improvements.',
+    inputSchema: z.object({
+      code: z.string().describe('Java source code containing IF GUI definitions'),
+    }),
+  },
+  async ({ code }) => {
+    const parsed = extractIFModel(code);
+    if (!parsed.gui) {
+      return {
+        content: [{ type: 'text' as const, text: 'Could not parse GUI from code.' }],
+      };
+    }
+    const validationIssues = validateGUIModel(parsed.gui);
+    const suggestions = generateLayoutSuggestions(parsed.gui, validationIssues);
+    return {
+      content: [{ type: 'text' as const, text: suggestions }],
+    };
+  }
+);
+
+server.registerTool(
+  'list_items',
+  {
+    description: 'List known Minecraft items available in the item atlas. Useful for referencing correct Material names.',
+    inputSchema: z.object({
+      query: z.string().optional().describe('Optional prefix filter for item names'),
+    }),
+  },
+  async ({ query }) => {
+    const entries = getItemAtlasEntries(query);
+    const lines = entries.map((e) => `${e.id} (${e.category})`);
+    return {
+      content: [{ type: 'text' as const, text: lines.join('\n') || 'No items found.' }],
+    };
+  }
+);
+
+function generateLayoutSuggestions(gui: any, issues: any[]): string {
+  const suggestions: string[] = [];
+
+  if (gui.rows > 6) {
+    suggestions.push('- GUI has more than 6 rows. Chest GUIs in Minecraft are limited to 6 rows.');
+  }
+
+  const totalPaneSlots = gui.panes.reduce((acc: number, p: any) => acc + p.length * p.height, 0);
+  const totalItems = gui.panes.reduce((acc: number, p: any) => acc + p.items.length, 0) + gui.orphanItems.length;
+  if (totalItems < totalPaneSlots * 0.3) {
+    suggestions.push('- GUI is very sparse. Consider reducing pane sizes or grouping items more tightly.');
+  }
+
+  const hasClose = gui.panes.some((p: any) =>
+    p.items.some(
+      (i: any) =>
+        i.slotX === p.length - 1 && i.slotY === 0 && /close|back|exit|cancel/i.test(i.displayName || '')
+    )
+  );
+  if (!hasClose) {
+    suggestions.push('- No close/back button detected in the top-right corner. Consider adding one for better UX.');
+  }
+
+  if (issues.length > 0) {
+    suggestions.push('');
+    suggestions.push('Validation issues:');
+    suggestions.push(...issues.map((i) => `- [${i.severity}] ${i.message}`));
+  }
+
+  return suggestions.join('\n') || 'Layout looks good. No suggestions.';
+}
+
+server.registerTool(
+  'get_if_docs',
+  {
+    description: 'Get IF (Inventory Framework) documentation for a specific topic.',
+    inputSchema: z.object({
+      topic: z.string().describe('Topic name, e.g. gui, panes, outline_pane, static_pane, gui_item, xml'),
+    }),
+  },
+  async ({ topic }) => {
+    const text = ifDocs[topic.toLowerCase()];
+    if (!text) {
+      return {
+        content: [{ type: 'text' as const, text: `Unknown IF topic: ${topic}. Available topics: ${Object.keys(ifDocs).join(', ')}` }],
+      };
+    }
+    return {
+      content: [{ type: 'text' as const, text }],
+    };
+  }
+);
+
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error('IF Visualizer MCP Server running on stdio');
+}
+
+main().catch((err) => {
+  console.error('Fatal error:', err);
+  process.exit(1);
+});
