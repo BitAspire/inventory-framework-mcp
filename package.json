@@ -1,0 +1,30 @@
+{
+  "name": "inventory-framework-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for validating and visualizing IF (Inventory Framework) GUIs",
+  "main": "dist/index.js",
+  "bin": {
+    "inventory-framework-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "keywords": ["mcp", "minecraft", "inventory-framework", "gui", "visualizer"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "jimp": "^1.6.0",
+    "zod": "^3.24.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
