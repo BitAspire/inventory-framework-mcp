@@ -1,0 +1,9 @@
+node_modules
+dist
+.git
+.gitignore
+*.md
+*.log
+.DS_Store
+bun.lock
+test-render.png

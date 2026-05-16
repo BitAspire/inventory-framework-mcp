@@ -45,6 +45,26 @@ Custom port/host:
 PORT=8080 HOST=0.0.0.0 npm run serve
 ```
 
+### Docker
+
+```bash
+docker build -t inventory-framework-mcp .
+docker run -d -p 3000:3000 --name if-mcp inventory-framework-mcp
+```
+
+Server běží v HTTP/SSE režimu na portu 3000.
+
+### Nasazení na Dokploy
+
+1. Repo obsahuje `Dockerfile` — Dokploy ho detekuje automaticky.
+2. Nastav port na `3000`.
+3. Health check: `/health` (Dockerfile už ho obsahuje).
+4. Pokud chceš použít vlastní textures, přidej bind mount:
+   ```
+   /cesta/k/textures:/app/assets/textures
+   ```
+   nebo nastav env `IF_ASSETS_DIR=/data/textures`.
+
 ## Client Configuration
 
 ### Local (via stdio)
