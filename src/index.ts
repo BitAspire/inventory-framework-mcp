@@ -228,17 +228,25 @@ async function main() {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
-      const transport = new SSEServerTransport('/messages', res);
-      transports[transport.sessionId] = transport;
-      const keepalive = setInterval(() => {
-        res.write(': keepalive\n\n');
-      }, 20000);
-      res.on('close', () => {
-        clearInterval(keepalive);
-        delete transports[transport.sessionId];
-      });
-      const srv = createServer();
-      await srv.connect(transport);
+      res.setHeader('X-Accel-Buffering', 'no');
+      try {
+        const transport = new SSEServerTransport('/messages', res);
+        transports[transport.sessionId] = transport;
+        console.error(`SSE session started: ${transport.sessionId}`);
+        const keepalive = setInterval(() => {
+          res.write(': keepalive\n\n');
+        }, 20000);
+        res.on('close', () => {
+          clearInterval(keepalive);
+          delete transports[transport.sessionId];
+          console.error(`SSE session closed: ${transport.sessionId}`);
+        });
+        const srv = createServer();
+        await srv.connect(transport);
+      } catch (err: any) {
+        console.error('SSE error:', err);
+        res.status(500).end();
+      }
     });
 
     app.post('/messages', async (req, res) => {
