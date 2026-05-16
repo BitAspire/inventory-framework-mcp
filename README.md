@@ -443,6 +443,16 @@ resources/
 
 ---
 
+## Info
+
+This project was built using DeepSeek-V4 Flash and OpenCode. If you find any issues, bugs or ideas for improvement, please contribute to our project.
+
+Use issues to directly report stuff to our maintainers or fork our project and submit a pull request.
+
+Thank you!
+
+---
+
 ## License
 
 [MIT](LICENSE)
