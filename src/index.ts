@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import express from 'express';
 import cors from 'cors';
@@ -10,6 +10,7 @@ import { renderGUI } from './renderer/gui-drawer.js';
 import { getItemAtlasEntries } from './renderer/item-atlas.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'node:crypto';
 
 function getResourcesDir(): string {
   if (process.env.IF_RESOURCES_DIR) return process.env.IF_RESOURCES_DIR;
@@ -209,7 +210,7 @@ async function main() {
     app.use(cors());
     app.use(express.json());
 
-    const transports: Record<string, SSEServerTransport> = {};
+    const transports: Record<string, StreamableHTTPServerTransport> = {};
 
     app.get('/', (_req, res) => {
       res.json({
@@ -217,45 +218,43 @@ async function main() {
         version: '0.1.0',
         status: 'running',
         endpoints: {
-          sse: '/sse',
-          messages: 'POST /messages',
+          mcp: '/mcp',
           health: '/health',
         },
       });
     });
 
-    app.get('/sse', async (req, res) => {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      res.setHeader('X-Accel-Buffering', 'no');
+    app.all('/mcp', async (req, res) => {
       try {
-        const transport = new SSEServerTransport('/messages', res);
-        transports[transport.sessionId] = transport;
-        console.error(`SSE session started: ${transport.sessionId}`);
-        const keepalive = setInterval(() => {
-          res.write(': keepalive\n\n');
-        }, 20000);
-        res.on('close', () => {
-          clearInterval(keepalive);
-          delete transports[transport.sessionId];
-          console.error(`SSE session closed: ${transport.sessionId}`);
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        let transport = sessionId ? transports[sessionId] : undefined;
+
+        if (transport) {
+          await transport.handleRequest(req, res, req.body);
+          return;
+        }
+
+        if (req.method !== 'POST' || !req.body || req.body.method !== 'initialize') {
+          res.status(400).json({ error: 'Session required. Send initialize first.' });
+          return;
+        }
+
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
         });
         const srv = createServer();
         await srv.connect(transport);
+        transport.onclose = () => {
+          if (transport?.sessionId) delete transports[transport.sessionId];
+        };
+        transport.onerror = (err) => {
+          console.error('Transport error:', err);
+        };
+        transports[transport.sessionId!] = transport;
+        await transport.handleRequest(req, res, req.body);
       } catch (err: any) {
-        console.error('SSE error:', err);
-        res.status(500).end();
-      }
-    });
-
-    app.post('/messages', async (req, res) => {
-      const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : '';
-      const transport = transports[sessionId];
-      if (transport) {
-        await transport.handlePostMessage(req, res, req.body);
-      } else {
-        res.status(400).json({ error: 'No transport found for sessionId' });
+        console.error('MCP error:', err);
+        if (!res.headersSent) res.status(500).end();
       }
     });
 
@@ -265,7 +264,7 @@ async function main() {
 
     await new Promise<void>((resolve, reject) => {
       const srv = app.listen(port, host, () => {
-        console.error(`IF Visualizer MCP Server running on http://${host}:${port}/sse`);
+        console.error(`IF Visualizer MCP Server running on http://${host}:${port}/mcp`);
         resolve();
       });
       srv.on('error', reject);
