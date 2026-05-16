@@ -24,30 +24,68 @@ Requires Node.js 18+.
 
 ## Running
 
+### Local stdio mode (default)
+
 ```bash
 npm start
 ```
 
-The server uses stdio transport for MCP.
+The server runs on stdio transport — spawn it from an MCP client directly.
 
-## Claude Desktop Configuration
+### HTTP/SSE mode (for remote hosting)
 
-Add to your `claude_desktop_config.json`:
+```bash
+npm run serve
+```
+
+Starts an HTTP server on port 3000 using the SSE transport protocol.
+
+Custom port/host:
+```bash
+PORT=8080 HOST=0.0.0.0 npm run serve
+```
+
+## Client Configuration
+
+### Local (via stdio)
+
+Add to your `claude_desktop_config.json` or `~/.config/zed/settings.json`:
 
 ```json
 {
   "mcpServers": {
     "if-visualizer": {
       "command": "node",
-      "args": [
-        "C:\\Users\\klema\\Documents\\GitHub\\inventory-framework-mcp\\dist\\index.js"
-      ]
+      "args": ["C:\\cesta\\k\\inventory-framework-mcp\\dist\\index.js"]
     }
   }
 }
 ```
 
-*(Adjust the path to your checkout location.)*
+### Remote (via HTTP/SSE)
+
+For Zed editor, add to `~/.config/zed/settings.json`:
+
+```json
+{
+  "mcp_servers": {
+    "if-visualizer": {
+      "url": "https://tvoje-domena.cz/sse"
+    }
+  }
+}
+```
+
+For other MCP clients, point them to `https://tvoje-domena.cz/sse`.
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `PORT` | HTTP port (default: 3000) |
+| `HOST` | Bind address (default: 0.0.0.0) |
+| `IF_RESOURCES_DIR` | Override path to `resources/` directory |
+| `IF_ASSETS_DIR` | Override path to `assets/` directory |
 
 ## Available Tools
 

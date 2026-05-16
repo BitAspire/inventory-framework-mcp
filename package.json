@@ -15,17 +15,24 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "start": "node dist/index.js"
+    "dev:http": "tsx src/index.ts --http",
+    "start": "node dist/index.js",
+    "serve": "node dist/index.js --http",
+    "serve:prod": "SERVE=1 PORT=3000 HOST=0.0.0.0 node dist/index.js"
   },
   "keywords": ["mcp", "minecraft", "inventory-framework", "gui", "visualizer"],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
     "jimp": "^1.6.0",
     "zod": "^3.24.3"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.1",
     "@types/node": "^22.15.3",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"

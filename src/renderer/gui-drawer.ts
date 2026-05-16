@@ -373,8 +373,8 @@ async function loadTexture(material: string, texturePath?: string): Promise<any 
 function getTextureRoots(texturePath?: string): string[] {
   const roots = [
     texturePath,
-    path.resolve(process.cwd(), 'assets'),
-    path.resolve(process.cwd(), 'assets', 'textures'),
+    process.env.IF_ASSETS_DIR ? path.resolve(process.env.IF_ASSETS_DIR) : undefined,
+    process.env.IF_ASSETS_DIR ? path.resolve(process.env.IF_ASSETS_DIR, 'textures') : undefined,
     path.resolve(MODULE_DIR, '..', '..', 'assets'),
     path.resolve(MODULE_DIR, '..', '..', 'assets', 'textures'),
   ].filter((root): root is string => Boolean(root));

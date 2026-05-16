@@ -1,6 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { z } from 'zod';
+import express from 'express';
+import cors from 'cors';
 import { extractIFModel } from './parser/if-extractor.js';
 import { validateGUIModel } from './validator/engine.js';
 import { renderGUI } from './renderer/gui-drawer.js';
@@ -8,7 +11,12 @@ import { getItemAtlasEntries } from './renderer/item-atlas.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const ifDocsPath = path.resolve(process.cwd(), 'resources', 'if-docs.json');
+function getResourcesDir(): string {
+  if (process.env.IF_RESOURCES_DIR) return process.env.IF_RESOURCES_DIR;
+  return path.resolve(__dirname, '..', 'resources');
+}
+
+const ifDocsPath = path.resolve(getResourcesDir(), 'if-docs.json');
 const ifDocs = JSON.parse(fs.readFileSync(ifDocsPath, 'utf-8')) as Record<string, string>;
 
 const server = new McpServer({
@@ -183,9 +191,50 @@ server.registerTool(
 );
 
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('IF Visualizer MCP Server running on stdio');
+  const args = process.argv.slice(2);
+  const useHttp = args.includes('--http') || args.includes('--serve') || process.env.SERVE === '1';
+  const port = parseInt(process.env.PORT || args.find(a => a.startsWith('--port='))?.split('=')[1] || '3000', 10);
+  const host = process.env.HOST || '0.0.0.0';
+
+  if (useHttp) {
+    const app = express();
+    app.use(cors());
+    app.use(express.json());
+
+    const transports: Record<string, SSEServerTransport> = {};
+
+    app.get('/sse', async (req, res) => {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      const transport = new SSEServerTransport('/messages', res);
+      transports[transport.sessionId] = transport;
+      res.on('close', () => { delete transports[transport.sessionId]; });
+      await server.connect(transport);
+    });
+
+    app.post('/messages', async (req, res) => {
+      const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : '';
+      const transport = transports[sessionId];
+      if (transport) {
+        await transport.handlePostMessage(req, res, req.body);
+      } else {
+        res.status(400).json({ error: 'No transport found for sessionId' });
+      }
+    });
+
+    app.get('/health', (_req, res) => {
+      res.json({ status: 'ok', sessions: Object.keys(transports).length });
+    });
+
+    app.listen(port, host, () => {
+      console.error(`IF Visualizer MCP Server running on http://${host}:${port}/sse`);
+    });
+  } else {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error('IF Visualizer MCP Server running on stdio');
+  }
 }
 
 main().catch((err) => {
