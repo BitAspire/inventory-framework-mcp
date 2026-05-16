@@ -29,7 +29,21 @@ This MCP server helps AI models validate and preview IF (Inventory Framework) GU
 `if-visualizer`
 
 ## Transport
-Stdio (`node dist/index.js`)
+- **Local**: Stdio (`node dist/index.js`)
+- **Remote**: Streamable HTTP (`node dist/index.js --http`, endpoint `/mcp`)
+
+## Remote connection via `mcp-remote`
+```json
+{
+  "context_servers": {
+    "if-visualiser": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://if-mcp.adam-klement.cz/mcp"],
+      "env": {}
+    }
+  }
+}
+```
 
 ## Example prompts for the agent
 - "Validate this IF code: ```java ... ```"
