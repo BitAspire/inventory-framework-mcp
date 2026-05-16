@@ -19,6 +19,6 @@ ENV SERVE=1 \
     PORT=3000 \
     HOST=0.0.0.0 \
     NODE_ENV=production
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget -qO- http://localhost:3000/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+  CMD node -e "const h=require('http');h.get('http://localhost:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 CMD ["node", "dist/index.js"]
