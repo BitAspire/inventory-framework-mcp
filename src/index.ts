@@ -196,12 +196,29 @@ async function main() {
   const port = parseInt(process.env.PORT || args.find(a => a.startsWith('--port='))?.split('=')[1] || '3000', 10);
   const host = process.env.HOST || '0.0.0.0';
 
+  console.error(`resources dir: ${getResourcesDir()}`);
+  console.error(`ifDocs path: ${ifDocsPath}`);
+  console.error(`ifDocs topics: ${Object.keys(ifDocs).length}`);
+
   if (useHttp) {
     const app = express();
     app.use(cors());
     app.use(express.json());
 
     const transports: Record<string, SSEServerTransport> = {};
+
+    app.get('/', (_req, res) => {
+      res.json({
+        name: 'inventory-framework-mcp',
+        version: '0.1.0',
+        status: 'running',
+        endpoints: {
+          sse: '/sse',
+          messages: 'POST /messages',
+          health: '/health',
+        },
+      });
+    });
 
     app.get('/sse', async (req, res) => {
       res.setHeader('Content-Type', 'text/event-stream');
@@ -227,8 +244,12 @@ async function main() {
       res.json({ status: 'ok', sessions: Object.keys(transports).length });
     });
 
-    app.listen(port, host, () => {
-      console.error(`IF Visualizer MCP Server running on http://${host}:${port}/sse`);
+    await new Promise<void>((resolve, reject) => {
+      const srv = app.listen(port, host, () => {
+        console.error(`IF Visualizer MCP Server running on http://${host}:${port}/sse`);
+        resolve();
+      });
+      srv.on('error', reject);
     });
   } else {
     const transport = new StdioServerTransport();
@@ -238,6 +259,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('Fatal error:', err);
+  console.error('Fatal error starting server:', err);
   process.exit(1);
 });
