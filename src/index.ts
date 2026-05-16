@@ -241,16 +241,20 @@ async function main() {
 
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (sid) => {
+            transports[sid] = transport!;
+          },
         });
         const srv = createServer();
         await srv.connect(transport);
         transport.onclose = () => {
-          if (transport?.sessionId) delete transports[transport.sessionId];
+          for (const [k, v] of Object.entries(transports)) {
+            if (v === transport) delete transports[k];
+          }
         };
         transport.onerror = (err) => {
           console.error('Transport error:', err);
         };
-        transports[transport.sessionId!] = transport;
         await transport.handleRequest(req, res, req.body);
       } catch (err: any) {
         console.error('MCP error:', err);
