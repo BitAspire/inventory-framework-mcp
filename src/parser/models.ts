@@ -13,6 +13,10 @@ export interface PaneModel {
   height: number;
   type: string; // e.g. 'OutlinePane', 'StaticPane', 'PaginatedPane'
   priority: number;
+  priorityLabel?: string;
+  positionSource?: 'constructor' | 'addPane' | 'default';
+  declaredX?: number;
+  declaredY?: number;
   visible: boolean;
   items: ItemModel[];
   // For outline pane specific
@@ -29,6 +33,7 @@ export interface ItemModel {
   // builder flags
   enchanted?: boolean;
   customModelData?: number;
+  hasClickHandler?: boolean;
   skullTexture?: string;
 }
 

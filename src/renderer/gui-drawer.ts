@@ -1,8 +1,25 @@
 import { Jimp } from 'jimp';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+import { randomUUID } from 'node:crypto';
 import { GUIModel, ItemModel, PaneModel } from '../parser/models.js';
 import { getAtlasEntry, getFallbackColor } from './item-atlas.js';
+import {
+  chooseWinner,
+  columnsForGui,
+  describeContributor,
+  resolveLayout,
+  resolveSlot,
+  rowsForGui,
+  type SlotContributor,
+} from '../layout/slot-resolution.js';
+import {
+  drawMinecraftTextBlock,
+  drawMinecraftTextLine,
+  measureMinecraftTextWidth,
+  stripMinecraftFormatting,
+} from './minecraft-text.js';
 
 const SLOT_SIZE_BASE = 32;
 const GAP_BASE = 2;
@@ -13,6 +30,24 @@ const MODULE_DIR = __dirname;
 export interface RenderOptions {
   scale?: number;
   texturePath?: string;
+  outputPath?: string;
+  hoverSlot?: { x: number; y: number };
+  showTooltip?: boolean;
+}
+
+export interface MatrixLegendItem {
+  material: string;
+  name?: string;
+  lore?: string[];
+  amount?: number;
+  clickHandler?: boolean;
+}
+
+export interface MatrixSpec {
+  title: string;
+  rows: number;
+  layout: string[];
+  legend: Record<string, MatrixLegendItem>;
 }
 
 export interface RenderResult {
@@ -26,16 +61,70 @@ export interface RenderResult {
     texturedItems: number;
     fallbackItems: string[];
     unknownMaterials: string[];
+    imagePath: string;
+    width: number;
+    height: number;
+    slots: RenderedSlotMetadata[];
   };
 }
 
-interface SlotItem {
-  item: ItemModel;
-  col: number;
-  row: number;
+export interface RenderedSlotMetadata {
+  x: number;
+  y: number;
+  material: string;
+  displayName?: string;
+  lore?: string[];
+  plainDisplayName?: string;
+  plainLore?: string[];
+  amount?: number;
+  hasClickHandler?: boolean;
+  priority: number;
+  contributors: string[];
 }
 
 const textureCache = new Map<string, any | null>();
+
+export function guiFromMatrixSpec(spec: MatrixSpec): GUIModel {
+  const rows = Math.max(1, spec.rows);
+  const paneItems: ItemModel[] = [];
+
+  spec.layout.slice(0, rows).forEach((rowText, row) => {
+    [...rowText].slice(0, 9).forEach((cell, col) => {
+      const legend = spec.legend[cell];
+      if (!legend) return;
+      paneItems.push({
+        material: legend.material,
+        displayName: legend.name,
+        lore: legend.lore,
+        amount: legend.amount,
+        hasClickHandler: legend.clickHandler,
+        slotX: col,
+        slotY: row,
+      });
+    });
+  });
+
+  return {
+    type: 'chest',
+    rows,
+    title: spec.title,
+    panes: [
+      {
+        x: 0,
+        y: 0,
+        length: 9,
+        height: rows,
+        type: 'StaticPane',
+        priority: -200,
+        priorityLabel: 'LOWEST',
+        positionSource: 'constructor',
+        visible: true,
+        items: paneItems,
+      },
+    ],
+    orphanItems: [],
+  };
+}
 
 export async function renderGUIBase64(gui: GUIModel, scale = 2): Promise<string> {
   return (await renderGUI(gui, { scale })).base64;
@@ -55,8 +144,10 @@ export async function renderGUI(gui: GUIModel, options: RenderOptions = {}): Pro
   const height = padding * 2 + titleBar + rows * slotSize + (rows - 1) * gap;
 
   const image = new Jimp({ width, height, color: 0xC6C6C6FF });
+  const layout = resolveLayout(gui);
 
   drawWindow(image, width, height, padding, titleBar);
+  await drawMinecraftTextLine(image, padding + 6 * scale, padding + 2 * scale, gui.title, '#1C1C1C');
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -69,19 +160,31 @@ export async function renderGUI(gui: GUIModel, options: RenderOptions = {}): Pro
     drawPane(image, pane, padding, titleBar, slotSize, gap, scale);
   }
 
-  const slotItems = resolveSlotItems(gui, cols, rows);
   const fallbackItems = new Set<string>();
   const unknownMaterials = new Set<string>();
+  const slots: RenderedSlotMetadata[] = [];
   let texturedItems = 0;
 
-  for (const slotItem of slotItems) {
-    if (!getAtlasEntry(slotItem.item.material)) unknownMaterials.add(slotItem.item.material);
-    const usedTexture = await drawItem(image, slotItem, padding, titleBar, slotSize, gap, scale, options.texturePath);
-    if (usedTexture) texturedItems++;
-    else fallbackItems.add(slotItem.item.material);
+  for (const slot of layout.slots.values()) {
+    if (!slot.winner) continue;
+    const item = slot.winner.item;
+    if (!getAtlasEntry(item.material)) unknownMaterials.add(item.material);
+    const drawn = await drawItem(image, slot.winner, padding, titleBar, slotSize, gap, scale, options.texturePath);
+    if (drawn) texturedItems++;
+    else fallbackItems.add(item.material);
+    slots.push(createSlotMetadata(slot.winner, slot.contributors));
   }
 
+  if ((options.showTooltip ?? Boolean(options.hoverSlot)) && options.hoverSlot) {
+    const hovered = resolveSlot(layout, options.hoverSlot.x, options.hoverSlot.y);
+    if (hovered?.winner) {
+      await drawTooltip(image, hovered.winner, padding, titleBar, slotSize, gap, scale);
+    }
+  }
+
+  const outputPath = await persistPreview(image, options.outputPath);
   const buf = await image.getBuffer('image/png');
+
   return {
     base64: buf.toString('base64'),
     metadata: {
@@ -89,24 +192,41 @@ export async function renderGUI(gui: GUIModel, options: RenderOptions = {}): Pro
       guiType: gui.type,
       columns: cols,
       rows,
-      renderedItems: slotItems.length,
+      renderedItems: slots.length,
       texturedItems,
       fallbackItems: [...fallbackItems].sort(),
       unknownMaterials: [...unknownMaterials].sort(),
+      imagePath: outputPath,
+      width,
+      height,
+      slots,
     },
   };
 }
 
-function columnsForGui(gui: GUIModel): number {
-  if (gui.type === 'hopper') return 5;
-  if (gui.type === 'dropper' || gui.type === 'dispenser') return 3;
-  return 9;
+function createSlotMetadata(winner: SlotContributor, contributors: SlotContributor[]): RenderedSlotMetadata {
+  return {
+    x: winner.col,
+    y: winner.row,
+    material: winner.item.material,
+    displayName: winner.item.displayName,
+    lore: winner.item.lore,
+    plainDisplayName: winner.item.displayName ? stripMinecraftFormatting(winner.item.displayName) : undefined,
+    plainLore: winner.item.lore?.map((line) => stripMinecraftFormatting(line)),
+    amount: winner.item.amount,
+    hasClickHandler: winner.item.hasClickHandler,
+    priority: winner.priority,
+    contributors: contributors.map((c) => describeContributor(c)),
+  };
 }
 
-function rowsForGui(gui: GUIModel): number {
-  if (gui.type === 'hopper') return 1;
-  if (gui.type === 'dropper' || gui.type === 'dispenser') return 3;
-  return gui.rows;
+async function persistPreview(image: any, outputPath?: string): Promise<string> {
+  const target = outputPath
+    ? path.resolve(outputPath)
+    : path.join(os.tmpdir(), 'inventory-framework-mcp', `${randomUUID()}.png`);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  await image.write(target);
+  return target;
 }
 
 function drawWindow(img: any, width: number, height: number, padding: number, titleBar: number) {
@@ -116,88 +236,6 @@ function drawWindow(img: any, width: number, height: number, padding: number, ti
   drawRect(img, padding, padding, width - padding * 2, titleBar, 0x8B8B8BFF);
   drawRect(img, padding, padding, width - padding * 2, 1, 0xFFFFFFFF);
   drawRect(img, padding, padding + titleBar - 1, width - padding * 2, 1, 0x555555FF);
-}
-
-function resolveSlotItems(gui: GUIModel, cols: number, rows: number): SlotItem[] {
-  const result: SlotItem[] = [];
-
-  for (const item of gui.orphanItems) {
-    result.push({
-      item,
-      col: clamp(item.slotX ?? 0, 0, cols - 1),
-      row: clamp(item.slotY ?? 0, 0, rows - 1),
-    });
-  }
-
-  for (const pane of gui.panes) {
-    pane.items.forEach((item, index) => {
-      const local = resolvePaneItemPosition(pane, item, index);
-      const col = pane.x + local.col;
-      const row = pane.y + local.row;
-      if (col >= 0 && row >= 0 && col < cols && row < rows) {
-        result.push({ item, col, row });
-      }
-    });
-  }
-
-  return result;
-}
-
-function resolvePaneItemPosition(pane: PaneModel, item: ItemModel, index: number): { col: number; row: number } {
-  if (item.slotX !== undefined && item.slotY !== undefined) {
-    return { col: item.slotX, row: item.slotY };
-  }
-
-  if (pane.type === 'OutlinePane') {
-    const outlineSlots = outlinePositions(pane.length, pane.height);
-    return outlineSlots[index % outlineSlots.length] ?? { col: 0, row: 0 };
-  }
-
-  const width = Math.max(1, pane.length);
-  return { col: index % width, row: Math.floor(index / width) };
-}
-
-function outlinePositions(width: number, height: number): Array<{ col: number; row: number }> {
-  const positions: Array<{ col: number; row: number }> = [];
-  for (let col = 0; col < width; col++) positions.push({ col, row: 0 });
-  for (let row = 1; row < height; row++) positions.push({ col: width - 1, row });
-  if (height > 1) {
-    for (let col = width - 2; col >= 0; col--) positions.push({ col, row: height - 1 });
-  }
-  if (width > 1) {
-    for (let row = height - 2; row > 0; row--) positions.push({ col: 0, row });
-  }
-  return positions;
-}
-
-function drawRect(img: any, x: number, y: number, w: number, h: number, color: number) {
-  const startX = Math.round(x);
-  const startY = Math.round(y);
-  const width = Math.max(0, Math.round(w));
-  const height = Math.max(0, Math.round(h));
-
-  for (let dy = 0; dy < height; dy++) {
-    for (let dx = 0; dx < width; dx++) {
-      const px = startX + dx;
-      const py = startY + dy;
-      if (px >= 0 && py >= 0 && px < img.bitmap.width && py < img.bitmap.height) {
-        img.setPixelColor(color, px, py);
-      }
-    }
-  }
-}
-
-function drawLine(img: any, x1: number, y1: number, x2: number, y2: number, thickness: number, color: number) {
-  const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
-  if (steps === 0) {
-    drawRect(img, x1, y1, thickness, thickness, color);
-    return;
-  }
-  for (let i = 0; i <= steps; i++) {
-    const x = Math.round(x1 + ((x2 - x1) * i) / steps);
-    const y = Math.round(y1 + ((y2 - y1) * i) / steps);
-    drawRect(img, x, y, thickness, thickness, color);
-  }
 }
 
 function drawSlot(img: any, x: number, y: number, size: number) {
@@ -227,7 +265,7 @@ function drawPane(img: any, pane: PaneModel, padding: number, titleBar: number, 
 
 async function drawItem(
   img: any,
-  slotItem: SlotItem,
+  slot: SlotContributor,
   padding: number,
   titleBar: number,
   slotSize: number,
@@ -235,7 +273,7 @@ async function drawItem(
   scale: number,
   texturePath?: string
 ): Promise<boolean> {
-  const { item, col, row } = slotItem;
+  const { item, col, row } = slot;
   const { x, y } = slotToPixels(col, row, padding, titleBar, slotSize, gap);
   const iconMargin = Math.max(4, 4 * scale);
   const iconSize = slotSize - iconMargin * 2;
@@ -255,6 +293,53 @@ async function drawItem(
   if (item.amount && item.amount > 1) drawStackBadge(img, x, y, slotSize, scale);
 
   return Boolean(texture);
+}
+
+async function drawTooltip(img: any, slot: SlotContributor, padding: number, titleBar: number, slotSize: number, gap: number, scale: number) {
+  const item = slot.item;
+  const lines = buildTooltipLines(item);
+  if (lines.length === 0) return;
+
+  const maxTextWidth = Math.max(...(await Promise.all(lines.map((line) => measureMinecraftTextWidth(line)))), 0);
+  const fontHeight = 18;
+  const tooltipWidth = Math.max(64 * scale / 2, maxTextWidth + 12 * scale);
+  const tooltipHeight = lines.length * (fontHeight + 2) + 10 * scale;
+
+  const slotPx = slotToPixels(slot.col, slot.row, padding, titleBar, slotSize, gap);
+  let x = slotPx.x + slotSize + 8 * scale;
+  let y = slotPx.y;
+
+  if (x + tooltipWidth > img.bitmap.width - 8) {
+    x = Math.max(8, slotPx.x - tooltipWidth - 8 * scale);
+  }
+  if (y + tooltipHeight > img.bitmap.height - 8) {
+    y = Math.max(8, img.bitmap.height - tooltipHeight - 8);
+  }
+
+  drawTooltipBox(img, x, y, tooltipWidth, tooltipHeight);
+  let cursorY = y + 4 * scale;
+  for (const line of lines) {
+    await drawMinecraftTextLine(img, x + 6 * scale, cursorY, line, '#FFFFFF');
+    cursorY += fontHeight + 2;
+  }
+}
+
+function buildTooltipLines(item: ItemModel): string[] {
+  const lines: string[] = [];
+  lines.push(item.displayName ?? item.material);
+  if (item.amount && item.amount > 1) lines.push(`&7x${item.amount}`);
+  if (item.lore?.length) lines.push(...item.lore);
+  return lines;
+}
+
+function drawTooltipBox(img: any, x: number, y: number, w: number, h: number) {
+  drawRect(img, x, y, w, h, 0x100010E6);
+  drawRect(img, x + 1, y + 1, w - 2, h - 2, 0x2B2B2BDD);
+  drawRect(img, x + 2, y + 2, w - 4, h - 4, 0x3A3A3AD8);
+  drawRect(img, x, y, w, 1, 0xFFFFFFFF);
+  drawRect(img, x, y + h - 1, w, 1, 0xFFFFFFFF);
+  drawRect(img, x, y, 1, h, 0xFFFFFFFF);
+  drawRect(img, x + w - 1, y, 1, h, 0xFFFFFFFF);
 }
 
 function drawFallbackIcon(img: any, item: ItemModel, x: number, y: number, size: number, scale: number) {
@@ -298,46 +383,23 @@ function drawFallbackIcon(img: any, item: ItemModel, x: number, y: number, size:
     return;
   }
 
+  if (material.includes('GLASS_PANE')) {
+    drawRect(img, x + size * 0.42, y + size * 0.08, size * 0.16, size * 0.84, light);
+    drawRect(img, x + size * 0.18, y + size * 0.42, size * 0.64, size * 0.16, light);
+    return;
+  }
+
+  if (material.includes('GLASS')) {
+    drawRect(img, x + size * 0.12, y + size * 0.12, size * 0.76, size * 0.76, light);
+    return;
+  }
+
   if (getAtlasEntry(material)?.category === 'blocks' || material.endsWith('_BLOCK')) {
     drawBlock(img, x, y, size, base, dark, light);
     return;
   }
 
   drawDiamond(img, x + size * 0.12, y + size * 0.12, size * 0.76, base, dark, light);
-}
-
-function drawBlock(img: any, x: number, y: number, size: number, base: number, dark: number, light: number) {
-  drawRect(img, x + size * 0.18, y + size * 0.18, size * 0.62, size * 0.62, base);
-  drawRect(img, x + size * 0.18, y + size * 0.18, size * 0.62, size * 0.12, light);
-  drawRect(img, x + size * 0.68, y + size * 0.18, size * 0.12, size * 0.62, dark);
-  drawRect(img, x + size * 0.18, y + size * 0.68, size * 0.62, size * 0.12, dark);
-}
-
-function drawDiamond(img: any, x: number, y: number, size: number, base: number, dark: number, light: number) {
-  const cx = x + size / 2;
-  const cy = y + size / 2;
-  for (let row = 0; row < size; row++) {
-    const halfWidth = (size / 2) - Math.abs(row - size / 2);
-    drawRect(img, cx - halfWidth, y + row, halfWidth * 2, 1, base);
-  }
-  drawLine(img, x + size * 0.5, y, x + size, y + size * 0.5, 1, light);
-  drawLine(img, x, y + size * 0.5, x + size * 0.5, y + size, 1, dark);
-  drawLine(img, x + size, y + size * 0.5, x + size * 0.5, y + size, 1, dark);
-}
-
-function drawGlint(img: any, x: number, y: number, size: number, scale: number) {
-  const thickness = Math.max(1, scale);
-  for (let offset = -size; offset < size * 2; offset += 8 * scale) {
-    drawLine(img, x + offset, y + size, x + offset + size, y, thickness, 0xB66DFFFF);
-  }
-}
-
-function drawStackBadge(img: any, x: number, y: number, slotSize: number, scale: number) {
-  const w = 10 * scale;
-  const h = 6 * scale;
-  drawRect(img, x + slotSize - w - 2 * scale, y + slotSize - h - 2 * scale, w, h, 0x1A1A1AE0);
-  drawRect(img, x + slotSize - w, y + slotSize - h, w - 3 * scale, Math.max(1, scale), 0xFFFFFFFF);
-  drawRect(img, x + slotSize - w, y + slotSize - h + 2 * scale, w - 5 * scale, Math.max(1, scale), 0xFFFFFFFF);
 }
 
 async function loadTexture(material: string, texturePath?: string): Promise<any | null> {
@@ -413,8 +475,67 @@ function slotToPixels(col: number, row: number, padding: number, titleBar: numbe
   };
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
+function drawRect(img: any, x: number, y: number, w: number, h: number, color: number) {
+  const startX = Math.round(x);
+  const startY = Math.round(y);
+  const width = Math.max(0, Math.round(w));
+  const height = Math.max(0, Math.round(h));
+
+  for (let dy = 0; dy < height; dy++) {
+    for (let dx = 0; dx < width; dx++) {
+      const px = startX + dx;
+      const py = startY + dy;
+      if (px >= 0 && py >= 0 && px < img.bitmap.width && py < img.bitmap.height) {
+        img.setPixelColor(color, px, py);
+      }
+    }
+  }
+}
+
+function drawLine(img: any, x1: number, y1: number, x2: number, y2: number, thickness: number, color: number) {
+  const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+  if (steps === 0) {
+    drawRect(img, x1, y1, thickness, thickness, color);
+    return;
+  }
+  for (let i = 0; i <= steps; i++) {
+    const x = Math.round(x1 + ((x2 - x1) * i) / steps);
+    const y = Math.round(y1 + ((y2 - y1) * i) / steps);
+    drawRect(img, x, y, thickness, thickness, color);
+  }
+}
+
+function drawBlock(img: any, x: number, y: number, size: number, base: number, dark: number, light: number) {
+  drawRect(img, x + size * 0.18, y + size * 0.18, size * 0.62, size * 0.62, base);
+  drawRect(img, x + size * 0.18, y + size * 0.18, size * 0.62, size * 0.12, light);
+  drawRect(img, x + size * 0.68, y + size * 0.18, size * 0.12, size * 0.62, dark);
+  drawRect(img, x + size * 0.18, y + size * 0.68, size * 0.62, size * 0.12, dark);
+}
+
+function drawDiamond(img: any, x: number, y: number, size: number, base: number, dark: number, light: number) {
+  const cx = x + size / 2;
+  for (let row = 0; row < size; row++) {
+    const halfWidth = size / 2 - Math.abs(row - size / 2);
+    drawRect(img, cx - halfWidth, y + row, halfWidth * 2, 1, base);
+  }
+  drawLine(img, x + size * 0.5, y, x + size, y + size * 0.5, 1, light);
+  drawLine(img, x, y + size * 0.5, x + size * 0.5, y + size, 1, dark);
+  drawLine(img, x + size, y + size * 0.5, x + size * 0.5, y + size, 1, dark);
+}
+
+function drawGlint(img: any, x: number, y: number, size: number, scale: number) {
+  const thickness = Math.max(1, scale);
+  for (let offset = -size; offset < size * 2; offset += 8 * scale) {
+    drawLine(img, x + offset, y + size, x + offset + size, y, thickness, 0xB66DFFFF);
+  }
+}
+
+function drawStackBadge(img: any, x: number, y: number, slotSize: number, scale: number) {
+  const w = 10 * scale;
+  const h = 6 * scale;
+  drawRect(img, x + slotSize - w - 2 * scale, y + slotSize - h - 2 * scale, w, h, 0x1A1A1AE0);
+  drawRect(img, x + slotSize - w, y + slotSize - h, w - 3 * scale, Math.max(1, scale), 0xFFFFFFFF);
+  drawRect(img, x + slotSize - w, y + slotSize - h + 2 * scale, w - 5 * scale, Math.max(1, scale), 0xFFFFFFFF);
 }
 
 function hexToJimpColor(hex: string): number {
@@ -430,4 +551,8 @@ function shadeColor(color: number, amount: number): number {
   const g = clamp(((color >>> 16) & 0xFF) + amount, 0, 255);
   const b = clamp(((color >>> 8) & 0xFF) + amount, 0, 255);
   return (((r << 24) | (g << 16) | (b << 8) | 0xFF) >>> 0);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

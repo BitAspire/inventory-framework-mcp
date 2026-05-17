@@ -1,9 +1,9 @@
 import { GUIModel, PaneModel, ValidationIssue } from '../parser/models.js';
 import { getAtlasEntry } from '../renderer/item-atlas.js';
+import { columnsForGui, getPanePriority, rowsForGui } from '../layout/slot-resolution.js';
 
 export function validateGUIModel(gui: GUIModel): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-
   const columns = columnsForGui(gui);
   const rows = rowsForGui(gui);
 
@@ -16,46 +16,72 @@ export function validateGUIModel(gui: GUIModel): ValidationIssue[] {
     });
   }
 
-  // Rule: pane-out-of-bounds + pane-overlap
-  const occupied = new Set<string>();
   for (const pane of gui.panes) {
     const maxX = pane.x + pane.length;
     const maxY = pane.y + pane.height;
 
     if (maxX > columns) {
+      const ctorHint =
+        pane.positionSource === 'default' && pane.type === 'StaticPane' && pane.declaredX === undefined && pane.declaredY === undefined
+          ? ` It looks like this pane may have been created with a width/height constructor; the parser now interprets two-argument panes as size, not position.`
+          : '';
       issues.push({
         ruleId: 'pane-out-of-bounds',
         severity: 'error',
-        message: `Pane ${pane.type} exceeds horizontal grid (x=${pane.x}, length=${pane.length}, gui columns=${columns}).`,
+        message: `Pane ${pane.type} exceeds horizontal grid (x=${pane.x}, length=${pane.length}, gui columns=${columns}).${ctorHint}`,
         location: `Pane at (${pane.x},${pane.y})`,
       });
     }
+
     if (maxY > rows) {
+      const ctorHint =
+        pane.positionSource === 'default' && pane.type === 'StaticPane' && pane.declaredX === undefined && pane.declaredY === undefined
+          ? ` If this is a size-only constructor, use addPane(...) placement for the on-screen origin.`
+          : '';
       issues.push({
         ruleId: 'pane-out-of-bounds',
         severity: 'error',
-        message: `Pane ${pane.type} exceeds vertical grid (y=${pane.y}, height=${pane.height}, gui rows=${rows}).`,
+        message: `Pane ${pane.type} exceeds vertical grid (y=${pane.y}, height=${pane.height}, gui rows=${rows}).${ctorHint}`,
         location: `Pane at (${pane.x},${pane.y})`,
       });
     }
+  }
+
+  const occupied = new Map<string, { priority: number; pane: PaneModel }>();
+  for (const pane of gui.panes) {
+    const panePriority = getPanePriority(pane, columns, rows);
+    const maxX = pane.x + pane.length;
+    const maxY = pane.y + pane.height;
 
     for (let py = pane.y; py < maxY; py++) {
       for (let px = pane.x; px < maxX; px++) {
         const key = `${px},${py}`;
-        if (occupied.has(key)) {
-          issues.push({
-            ruleId: 'pane-overlap',
-            severity: 'warning',
-            message: `Pane overlap detected at slot (${px},${py}).`,
-            location: `Pane at (${pane.x},${pane.y})`,
-          });
+        const prev = occupied.get(key);
+        if (prev) {
+          if (panePriority === prev.priority) {
+            issues.push({
+              ruleId: 'pane-overlap',
+              severity: 'warning',
+              message: `Pane overlap detected at slot (${px},${py}) between same-priority panes. The later pane wins.`,
+              location: `Pane at (${pane.x},${pane.y})`,
+            });
+          } else if (panePriority < prev.priority) {
+            issues.push({
+              ruleId: 'pane-overlap',
+              severity: 'warning',
+              message: `Lower-priority pane ${pane.type} overlaps higher-priority pane ${prev.pane.type} at slot (${px},${py}).`,
+              location: `Pane at (${pane.x},${pane.y})`,
+            });
+          }
         }
-        occupied.add(key);
+
+        if (!prev || panePriority >= prev.priority) {
+          occupied.set(key, { priority: panePriority, pane });
+        }
       }
     }
   }
 
-  // Rule: unknown-material
   const seen = new Set<string>();
   const allItems = [...gui.orphanItems, ...gui.panes.flatMap((p) => p.items)].filter((item) => {
     const key = `${item.material}-${item.displayName}-${item.slotX}-${item.slotY}`;
@@ -63,6 +89,7 @@ export function validateGUIModel(gui: GUIModel): ValidationIssue[] {
     seen.add(key);
     return true;
   });
+
   for (const item of allItems) {
     if (!item.material || item.material === 'UNKNOWN') {
       issues.push({
@@ -81,7 +108,6 @@ export function validateGUIModel(gui: GUIModel): ValidationIssue[] {
     }
   }
 
-  // Rule: missing-displayname
   for (const item of allItems) {
     if (!item.displayName && isInteractiveMaterial(item.material)) {
       issues.push({
@@ -93,7 +119,6 @@ export function validateGUIModel(gui: GUIModel): ValidationIssue[] {
     }
   }
 
-  // Rule: empty-slot-waste
   const guiSlots = rows * columns;
   const usedSlots = occupied.size;
   if (usedSlots < guiSlots * 0.3 && gui.rows > 2) {
@@ -108,24 +133,32 @@ export function validateGUIModel(gui: GUIModel): ValidationIssue[] {
   return issues;
 }
 
-function columnsForGui(gui: GUIModel): number {
-  if (gui.type === 'hopper') return 5;
-  if (gui.type === 'dropper' || gui.type === 'dispenser') return 3;
-  return 9;
-}
-
-function rowsForGui(gui: GUIModel): number {
-  if (gui.type === 'hopper') return 1;
-  if (gui.type === 'dropper' || gui.type === 'dispenser') return 3;
-  return gui.rows;
-}
-
 function isInteractiveMaterial(mat: string): boolean {
-  // Heuristic: most blocks are decorative; items/buttons usually need names
   const decorative = [
-    'STONE','GRASS_BLOCK','DIRT','COBBLESTONE','OAK_PLANKS','SPRUCE_PLANKS','BIRCH_PLANKS',
-    'SAND','GRAVEL','GLASS','BRICKS','MOSSY_COBBLESTONE','OBSIDIAN','DIAMOND_ORE','IRON_ORE',
-    'COAL_ORE','GOLD_ORE','REDSTONE_ORE','LAPIS_ORE','EMERALD_ORE','BEDROCK','WATER','LAVA',
+    'STONE',
+    'GRASS_BLOCK',
+    'DIRT',
+    'COBBLESTONE',
+    'OAK_PLANKS',
+    'SPRUCE_PLANKS',
+    'BIRCH_PLANKS',
+    'SAND',
+    'GRAVEL',
+    'GLASS',
+    'GLASS_PANE',
+    'BRICKS',
+    'MOSSY_COBBLESTONE',
+    'OBSIDIAN',
+    'DIAMOND_ORE',
+    'IRON_ORE',
+    'COAL_ORE',
+    'GOLD_ORE',
+    'REDSTONE_ORE',
+    'LAPIS_ORE',
+    'EMERALD_ORE',
+    'BEDROCK',
+    'WATER',
+    'LAVA',
   ];
   return !decorative.includes(mat.toUpperCase());
 }

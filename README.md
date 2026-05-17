@@ -26,6 +26,8 @@
 - [Tools Reference](#tools-reference)
   - [`validate_if_code`](#validate_if_code)
   - [`render_gui`](#render_gui)
+  - [`render_project_gui`](#render_project_gui)
+  - [`inspect_gui_slot`](#inspect_gui_slot)
   - [`analyze_layout`](#analyze_layout)
   - [`list_items`](#list_items)
   - [`get_if_docs`](#get_if_docs)
@@ -43,6 +45,8 @@
 
 - ✅ **Validate** IF Java code — syntax errors, pane overlaps, row limits, best practices
 - 🎨 **Render** GUIs as PNG images — see exactly how the chest/dropper/hopper will look in-game
+- 🧩 **Project-aware render** — read a source file directly and apply fixture substitutions
+- 🔎 **Slot inspection** — inspect the effective item and contributors for any slot
 - 📦 **Real textures** — bundled with 1000+ Minecraft item and block textures; also accepts custom resource packs
 - 🔍 **Analyze layout** — UX suggestions (sparse GUIs, missing close buttons, oversized panes)
 - 📋 **Item lookup** — search 1000+ Minecraft `Material` names and their categories
@@ -245,13 +249,38 @@ Renders a PNG screenshot of the GUI exactly as it would appear in-game.
 
 | Parameter     | Type   | Default | Description |
 |---------------|--------|---------|-------------|
-| `code`        | string | —       | Java source code (required) |
+| `code`        | string | —       | Java source code |
+| `matrix`      | object | —       | Slot matrix spec with `title`, `rows`, `layout`, and `legend` |
 | `scale`       | number | `2`     | Image scale factor (1–4) |
 | `texturePath` | string | —       | Extra resource pack or texture folder path |
+| `outputPath`  | string | temp    | Save the PNG to a specific path |
+| `hoverSlot`   | object | —       | Render a tooltip preview for a specific slot |
+| `showTooltip` | boolean | `false` | Enable tooltip rendering for `hoverSlot` |
 
 The response includes:
 - A `base64`-encoded PNG image (type `image`)
-- Metadata: GUI type, title, dimensions, rendered/fetched item counts
+- Metadata: GUI type, title, dimensions, image path, slot winners, rendered/fetched item counts
+
+### `render_project_gui`
+
+Renders a GUI from a project source file.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `projectRoot` | string | Project root directory |
+| `sourceFile` | string | Java source file to read |
+| `entryMethod` | string | Optional hint for the GUI entry point |
+| `fixtures` | object | Fixture substitutions for `lang` and direct text replacements |
+
+### `inspect_gui_slot`
+
+Returns the effective item for a specific slot plus all contributing panes/items.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `code` / `matrix` | string/object | Same inputs as `render_gui` |
+| `x` | number | Slot column |
+| `y` | number | Slot row |
 
 ### `analyze_layout`
 
@@ -413,6 +442,8 @@ npx tsc --noEmit
 ```
 src/
 ├── index.ts                    Server entry point + HTTP routes
+├── layout/
+│   └── slot-resolution.ts      Slot mapping + overlap resolution
 ├── parser/
 │   ├── tokenizer.ts            Java source → token stream
 │   ├── if-extractor.ts         Tokens → GUIModel
@@ -421,6 +452,7 @@ src/
 │   └── engine.ts               Rule-based validation engine
 ├── renderer/
 │   ├── gui-drawer.ts           Jimp-based GUI renderer
+│   ├── minecraft-text.ts       Minecraft color-code text rendering
 │   └── item-atlas.ts           Material → color/texture lookup
 assets/
 └── textures/                   Minecraft item/block PNGs

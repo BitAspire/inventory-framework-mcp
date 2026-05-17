@@ -852,9 +852,49 @@ const ATLAS: AtlasEntry[] = [
   { id: 'MOSSY_COBBLESTONE', category: 'blocks', color: '#6E8B5E' },
 ];
 
+appendDerivedEntries(ATLAS);
+
 const ATLAS_MAP = new Map<string, AtlasEntry>();
 for (const entry of ATLAS) {
   ATLAS_MAP.set(entry.id, entry);
+}
+
+function appendDerivedEntries(entries: AtlasEntry[]) {
+  const baseColors: Record<string, string> = {
+    WHITE: '#FFFFFF',
+    ORANGE: '#FF8C00',
+    MAGENTA: '#FF00FF',
+    LIGHT_BLUE: '#ADD8E6',
+    YELLOW: '#FFD700',
+    LIME: '#32CD32',
+    PINK: '#FFB6C1',
+    GRAY: '#808080',
+    LIGHT_GRAY: '#D3D3D3',
+    CYAN: '#00FFFF',
+    PURPLE: '#800080',
+    BLUE: '#0000FF',
+    BROWN: '#8B4513',
+    GREEN: '#008000',
+    RED: '#FF0000',
+    BLACK: '#000000',
+  };
+
+  for (const [name, color] of Object.entries(baseColors)) {
+    pushIfMissing(entries, { id: `${name}_STAINED_GLASS`, category: 'blocks', color });
+    pushIfMissing(entries, { id: `${name}_STAINED_GLASS_PANE`, category: 'blocks', color });
+  }
+
+  pushIfMissing(entries, { id: 'SPECTRAL_ARROW', category: 'combat', color: '#FFFF55' });
+  pushIfMissing(entries, { id: 'TIPPED_ARROW', category: 'combat', color: '#E3E3E3' });
+  pushIfMissing(entries, { id: 'BLACK_STAINED_GLASS', category: 'blocks', color: '#000000' });
+  pushIfMissing(entries, { id: 'BLACK_STAINED_GLASS_PANE', category: 'blocks', color: '#000000' });
+  pushIfMissing(entries, { id: 'GLASS_PANE', category: 'blocks', color: '#D0E8F2' });
+}
+
+function pushIfMissing(entries: AtlasEntry[], entry: AtlasEntry) {
+  if (!entries.some((candidate) => candidate.id === entry.id)) {
+    entries.push(entry);
+  }
 }
 
 export function getAtlasEntry(id: string): AtlasEntry | undefined {
