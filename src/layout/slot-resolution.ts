@@ -26,6 +26,11 @@ export interface ResolvedLayout {
   contributors: SlotContributor[];
 }
 
+export interface LayoutBounds {
+  columns: number;
+  rows: number;
+}
+
 export function columnsForGui(gui: GUIModel): number {
   if (gui.type === 'hopper') return 5;
   if (gui.type === 'dropper' || gui.type === 'dispenser') return 3;
@@ -36,6 +41,26 @@ export function rowsForGui(gui: GUIModel): number {
   if (gui.type === 'hopper') return 1;
   if (gui.type === 'dropper' || gui.type === 'dispenser') return 3;
   return gui.rows;
+}
+
+export function getLayoutBounds(gui: GUIModel): LayoutBounds {
+  const columns = columnsForGui(gui);
+  const rows = rowsForGui(gui);
+
+  const paneBounds = gui.panes.reduce(
+    (acc, pane) => {
+      if (pane.visible === false) return acc;
+      acc.columns = Math.max(acc.columns, pane.x + Math.max(1, pane.length));
+      acc.rows = Math.max(acc.rows, pane.y + Math.max(1, pane.height));
+      return acc;
+    },
+    { columns, rows }
+  );
+
+  return {
+    columns: paneBounds.columns,
+    rows: paneBounds.rows,
+  };
 }
 
 export function getPanePriority(pane: PaneModel, columns: number, rows: number): number {
@@ -57,9 +82,9 @@ export function getPanePriority(pane: PaneModel, columns: number, rows: number):
   return 0;
 }
 
-export function resolveLayout(gui: GUIModel): ResolvedLayout {
-  const columns = columnsForGui(gui);
-  const rows = rowsForGui(gui);
+export function resolveLayout(gui: GUIModel, bounds: LayoutBounds = getLayoutBounds(gui)): ResolvedLayout {
+  const columns = bounds.columns;
+  const rows = bounds.rows;
   const slots = new Map<string, ResolvedSlot>();
   const contributors: SlotContributor[] = [];
 

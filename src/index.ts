@@ -28,7 +28,7 @@ const renderMatrixLegendItemSchema = z.object({
 });
 
 const renderMatrixSchema = z.object({
-  title: z.string(),
+  title: z.string().optional(),
   rows: z.number().int().positive(),
   layout: z.array(z.string()),
   legend: z.record(renderMatrixLegendItemSchema),
@@ -411,15 +411,10 @@ function generateLayoutSuggestions(gui: any, issues: any[]): string {
 
   const hasClose = [...layout.slots.values()].some((slot) => {
     const winner = slot.winner;
-    return Boolean(
-      winner &&
-      slot.col === columns - 1 &&
-      slot.row === 0 &&
-      /close|back|exit|cancel/i.test(winner.item.displayName || '')
-    );
+    return Boolean(winner && /close|back|exit|cancel/i.test(`${winner.item.displayName || ''} ${winner.item.material || ''}`));
   });
   if (!hasClose) {
-    suggestions.push('- No close/back button detected in the top-right corner. Consider adding one for better UX.');
+    suggestions.push('- No close/back button detected. Users may find this bad UX; consider adding a close/back button.');
   }
 
   if (issues.length > 0) {

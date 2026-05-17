@@ -7,24 +7,24 @@ import { GUIModel, ItemModel, PaneModel } from '../parser/models.js';
 import { getAtlasEntry, getFallbackColor } from './item-atlas.js';
 import {
   chooseWinner,
-  columnsForGui,
   describeContributor,
+  getLayoutBounds,
   resolveLayout,
   resolveSlot,
-  rowsForGui,
   type SlotContributor,
 } from '../layout/slot-resolution.js';
 import {
-  drawMinecraftTextBlock,
   drawMinecraftTextLine,
   measureMinecraftTextWidth,
   stripMinecraftFormatting,
 } from './minecraft-text.js';
 
-const SLOT_SIZE_BASE = 32;
-const GAP_BASE = 2;
-const PADDING_BASE = 16;
-const TITLE_BAR_BASE = 20;
+const SLOT_SIZE_BASE = 68;
+const GAP_BASE = 13;
+const PADDING_BASE = 30;
+const TITLE_BAR_BASE = 0;
+const TITLE_HEIGHT_BASE = 55;
+const WINDOW_RADIUS_BASE = 12;
 const MODULE_DIR = __dirname;
 
 export interface RenderOptions {
@@ -44,7 +44,7 @@ export interface MatrixLegendItem {
 }
 
 export interface MatrixSpec {
-  title: string;
+  title?: string;
   rows: number;
   layout: string[];
   legend: Record<string, MatrixLegendItem>;
@@ -66,6 +66,13 @@ export interface RenderResult {
     height: number;
     slots: RenderedSlotMetadata[];
   };
+}
+
+export interface RenderDimensions {
+  width: number;
+  height: number;
+  columns: number;
+  rows: number;
 }
 
 export interface RenderedSlotMetadata {
@@ -107,7 +114,7 @@ export function guiFromMatrixSpec(spec: MatrixSpec): GUIModel {
   return {
     type: 'chest',
     rows,
-    title: spec.title,
+    title: spec.title ?? '',
     panes: [
       {
         x: 0,
@@ -130,34 +137,47 @@ export async function renderGUIBase64(gui: GUIModel, scale = 2): Promise<string>
   return (await renderGUI(gui, { scale })).base64;
 }
 
+export function getRenderDimensions(gui: GUIModel, scale = 2): RenderDimensions {
+  const slotSize = SLOT_SIZE_BASE * scale;
+  const gap = GAP_BASE * scale;
+  const padding = PADDING_BASE * scale;
+  const titleBar = TITLE_BAR_BASE * scale;
+  const titleHeight = getHeaderHeight(gui, scale);
+  const bounds = getLayoutBounds(gui);
+
+  return {
+    columns: bounds.columns,
+    rows: bounds.rows,
+    width: padding * 2 + bounds.columns * slotSize + (bounds.columns - 1) * gap,
+    height: padding * 2 + titleHeight + titleBar + bounds.rows * slotSize + (bounds.rows - 1) * gap,
+  };
+}
+
 export async function renderGUI(gui: GUIModel, options: RenderOptions = {}): Promise<RenderResult> {
   const scale = options.scale ?? 2;
   const slotSize = SLOT_SIZE_BASE * scale;
   const gap = GAP_BASE * scale;
   const padding = PADDING_BASE * scale;
   const titleBar = TITLE_BAR_BASE * scale;
+  const titleHeight = getHeaderHeight(gui, scale);
+  const bounds = getLayoutBounds(gui);
+  const { width, height, columns: cols, rows } = getRenderDimensions(gui, scale);
 
-  const cols = columnsForGui(gui);
-  const rows = rowsForGui(gui);
+  const image = new Jimp({ width, height, color: 0x00000000 });
+  const layout = resolveLayout(gui, bounds);
 
-  const width = padding * 2 + cols * slotSize + (cols - 1) * gap;
-  const height = padding * 2 + titleBar + rows * slotSize + (rows - 1) * gap;
-
-  const image = new Jimp({ width, height, color: 0xC6C6C6FF });
-  const layout = resolveLayout(gui);
-
-  drawWindow(image, width, height, padding, titleBar);
-  await drawMinecraftTextLine(image, padding + 6 * scale, padding + 2 * scale, gui.title, '#1C1C1C');
+  drawWindow(image, width, height, padding, titleBar, titleHeight);
+  await drawTitle(image, padding, titleHeight, width, gui.title, scale);
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      const { x, y } = slotToPixels(c, r, padding, titleBar, slotSize, gap);
+      const { x, y } = slotToPixels(c, r, padding, titleHeight, titleBar, slotSize, gap);
       drawSlot(image, x, y, slotSize);
     }
   }
 
   for (const pane of gui.panes) {
-    drawPane(image, pane, padding, titleBar, slotSize, gap, scale);
+    drawPane(image, pane, padding, titleHeight, titleBar, slotSize, gap, scale);
   }
 
   const fallbackItems = new Set<string>();
@@ -169,7 +189,7 @@ export async function renderGUI(gui: GUIModel, options: RenderOptions = {}): Pro
     if (!slot.winner) continue;
     const item = slot.winner.item;
     if (!getAtlasEntry(item.material)) unknownMaterials.add(item.material);
-    const drawn = await drawItem(image, slot.winner, padding, titleBar, slotSize, gap, scale, options.texturePath);
+    const drawn = await drawItem(image, slot.winner, padding, titleHeight, titleBar, slotSize, gap, scale, options.texturePath);
     if (drawn) texturedItems++;
     else fallbackItems.add(item.material);
     slots.push(createSlotMetadata(slot.winner, slot.contributors));
@@ -178,7 +198,7 @@ export async function renderGUI(gui: GUIModel, options: RenderOptions = {}): Pro
   if ((options.showTooltip ?? Boolean(options.hoverSlot)) && options.hoverSlot) {
     const hovered = resolveSlot(layout, options.hoverSlot.x, options.hoverSlot.y);
     if (hovered?.winner) {
-      await drawTooltip(image, hovered.winner, padding, titleBar, slotSize, gap, scale);
+      await drawTooltip(image, hovered.winner, padding, titleHeight, titleBar, slotSize, gap, scale);
     }
   }
 
@@ -229,44 +249,42 @@ async function persistPreview(image: any, outputPath?: string): Promise<string> 
   return target;
 }
 
-function drawWindow(img: any, width: number, height: number, padding: number, titleBar: number) {
-  drawRect(img, 0, 0, width, height, 0x373737FF);
-  drawRect(img, 1, 1, width - 2, height - 2, 0xFFFFFFFF);
-  drawRect(img, 2, 2, width - 4, height - 4, 0xC6C6C6FF);
-  drawRect(img, padding, padding, width - padding * 2, titleBar, 0x8B8B8BFF);
-  drawRect(img, padding, padding, width - padding * 2, 1, 0xFFFFFFFF);
-  drawRect(img, padding, padding + titleBar - 1, width - padding * 2, 1, 0x555555FF);
+function drawWindow(img: any, width: number, height: number, padding: number, titleBar: number, titleHeight: number) {
+  const radius = WINDOW_RADIUS_BASE * Math.max(1, padding / PADDING_BASE);
+  drawRoundedRect(img, 0, 0, width, height, radius, 0xD8D8D8FF);
+
+  if (titleBar > 0) {
+    drawRect(img, padding, padding + titleHeight, width - padding * 2, titleBar, 0xA0A0A0FF);
+    drawRect(img, padding, padding + titleHeight, width - padding * 2, 1, 0xFDFDFDFF);
+    drawRect(img, padding, padding + titleHeight + titleBar - 1, width - padding * 2, 1, 0x8B8B8BFF);
+  }
+}
+
+async function drawTitle(img: any, padding: number, titleHeight: number, width: number, title: string, scale: number) {
+  if (!shouldRenderHeader(title) || titleHeight <= 0) return;
+  const titleScale = Math.max(2, Math.round(scale * 1.5));
+  const titleX = padding + 5 * scale;
+  const titleY = padding + 10 * scale;
+  await drawMinecraftTextLine(img, titleX + titleScale, titleY + titleScale, title, '#F4F4F4', titleScale);
+  await drawMinecraftTextLine(img, titleX, titleY, title, '#050505', titleScale);
 }
 
 function drawSlot(img: any, x: number, y: number, size: number) {
-  drawRect(img, x + 1, y + 1, size - 1, size - 1, 0x373737FF);
-  drawRect(img, x, y, size - 1, size - 1, 0xFFFFFFFF);
-  drawRect(img, x + 1, y + 1, size - 2, size - 2, 0x8B8B8BFF);
-  drawRect(img, x + 2, y + 2, size - 4, size - 4, 0x777777FF);
+  const radius = Math.max(3, Math.round(size * 0.045));
+  drawRoundedRect(img, x, y, size, size, radius, 0x4F4F4FFF);
+  drawRoundedRect(img, x + 2, y + 2, size - 4, size - 4, Math.max(1, radius - 2), 0xF8F8F8FF);
 }
 
-function drawPane(img: any, pane: PaneModel, padding: number, titleBar: number, slotSize: number, gap: number, scale: number) {
-  const x = padding + pane.x * (slotSize + gap);
-  const y = padding + titleBar + pane.y * (slotSize + gap);
-  const w = pane.length * (slotSize + gap) - gap;
-  const h = pane.height * (slotSize + gap) - gap;
-  const thickness = Math.max(1, scale);
-
-  if (pane.type === 'OutlinePane') {
-    drawRect(img, x, y, w, thickness, 0x4F4F4FFF);
-    drawRect(img, x, y + h - thickness, w, thickness, 0x4F4F4FFF);
-    drawRect(img, x, y, thickness, h, 0x4F4F4FFF);
-    drawRect(img, x + w - thickness, y, thickness, h, 0x4F4F4FFF);
-  } else if (pane.type === 'PaginatedPane') {
-    drawRect(img, x, y, w, thickness, 0x5B6E8DFF);
-    drawRect(img, x, y + h - thickness, w, thickness, 0x5B6E8DFF);
-  }
+function drawPane(_img: any, _pane: PaneModel, _padding: number, _titleHeight: number, _titleBar: number, _slotSize: number, _gap: number, _scale: number) {
+  // Pane bounds are intentionally not rendered. The preview should show the final GUI slots/items,
+  // not helper outlines from IF pane types such as OutlinePane or PaginatedPane.
 }
 
 async function drawItem(
   img: any,
   slot: SlotContributor,
   padding: number,
+  titleHeight: number,
   titleBar: number,
   slotSize: number,
   gap: number,
@@ -274,15 +292,15 @@ async function drawItem(
   texturePath?: string
 ): Promise<boolean> {
   const { item, col, row } = slot;
-  const { x, y } = slotToPixels(col, row, padding, titleBar, slotSize, gap);
-  const iconMargin = Math.max(4, 4 * scale);
+  const { x, y } = slotToPixels(col, row, padding, titleHeight, titleBar, slotSize, gap);
+  const iconMargin = Math.max(8, 8 * scale);
   const iconSize = slotSize - iconMargin * 2;
   const iconX = x + iconMargin;
   const iconY = y + iconMargin;
 
   const texture = await loadTexture(item.material, texturePath);
   if (texture) {
-    const resized = texture.clone().resize({ w: iconSize, h: iconSize });
+    const resized = resizeNearest(texture, iconSize, iconSize);
     img.composite(resized, iconX, iconY);
   } else {
     drawFallbackIcon(img, item, iconX, iconY, iconSize, scale);
@@ -295,7 +313,7 @@ async function drawItem(
   return Boolean(texture);
 }
 
-async function drawTooltip(img: any, slot: SlotContributor, padding: number, titleBar: number, slotSize: number, gap: number, scale: number) {
+async function drawTooltip(img: any, slot: SlotContributor, padding: number, titleHeight: number, titleBar: number, slotSize: number, gap: number, scale: number) {
   const item = slot.item;
   const lines = buildTooltipLines(item);
   if (lines.length === 0) return;
@@ -305,7 +323,7 @@ async function drawTooltip(img: any, slot: SlotContributor, padding: number, tit
   const tooltipWidth = Math.max(64 * scale / 2, maxTextWidth + 12 * scale);
   const tooltipHeight = lines.length * (fontHeight + 2) + 10 * scale;
 
-  const slotPx = slotToPixels(slot.col, slot.row, padding, titleBar, slotSize, gap);
+  const slotPx = slotToPixels(slot.col, slot.row, padding, titleHeight, titleBar, slotSize, gap);
   let x = slotPx.x + slotSize + 8 * scale;
   let y = slotPx.y;
 
@@ -344,21 +362,31 @@ function drawTooltipBox(img: any, x: number, y: number, w: number, h: number) {
 
 function drawFallbackIcon(img: any, item: ItemModel, x: number, y: number, size: number, scale: number) {
   const base = hexToJimpColor(getFallbackColor(item.material));
-  const dark = shadeColor(base, -45);
-  const light = shadeColor(base, 35);
+  const dark = shadeColor(base, -50);
+  const darker = shadeColor(base, -80);
+  const light = shadeColor(base, 50);
+  const lighter = shadeColor(base, 80);
   const material = item.material.toUpperCase();
 
   if (material.includes('SWORD')) {
-    drawLine(img, x + size * 0.25, y + size * 0.78, x + size * 0.78, y + size * 0.25, Math.max(2, 2 * scale), light);
-    drawRect(img, x + size * 0.18, y + size * 0.78, size * 0.38, Math.max(2, 3 * scale), dark);
-    drawRect(img, x + size * 0.18, y + size * 0.84, size * 0.18, Math.max(2, 3 * scale), 0x6A442AFF);
+    const centerX = x + size * 0.5;
+    const centerY = y + size * 0.5;
+    drawLine(img, centerX - size * 0.15, centerY - size * 0.35, centerX + size * 0.15, centerY - size * 0.35, Math.max(2, 3 * scale), lighter);
+    drawLine(img, centerX - size * 0.12, centerY - size * 0.32, centerX + size * 0.12, centerY - size * 0.32, Math.max(1, scale), darker);
+    drawLine(img, centerX - size * 0.08, centerY - size * 0.15, centerX - size * 0.08, centerY + size * 0.35, Math.max(2, 3 * scale), light);
+    drawLine(img, centerX + size * 0.08, centerY - size * 0.15, centerX + size * 0.08, centerY + size * 0.35, Math.max(2, 3 * scale), dark);
+    drawRect(img, centerX - size * 0.1, centerY + size * 0.3, size * 0.2, Math.max(2, 4 * scale), 0x6A442AFF);
+    drawRect(img, centerX - size * 0.06, centerY + size * 0.35, size * 0.12, Math.max(1, 2 * scale), 0x4A2818FF);
     return;
   }
 
   if (material.includes('PICKAXE') || material.includes('AXE')) {
-    drawLine(img, x + size * 0.35, y + size * 0.28, x + size * 0.72, y + size * 0.65, Math.max(2, 2 * scale), 0x6A442AFF);
-    drawRect(img, x + size * 0.18, y + size * 0.2, size * 0.55, Math.max(3, 4 * scale), light);
-    drawRect(img, x + size * 0.18, y + size * 0.2, Math.max(3, 4 * scale), size * 0.22, dark);
+    const centerX = x + size * 0.5;
+    const centerY = y + size * 0.45;
+    drawRect(img, centerX - size * 0.25, centerY - size * 0.2, size * 0.5, Math.max(3, 5 * scale), lighter);
+    drawRect(img, centerX - size * 0.23, centerY - size * 0.18, size * 0.46, Math.max(1, 2 * scale), darker);
+    drawRect(img, centerX - size * 0.25, centerY, size * 0.5, Math.max(1, 2 * scale), dark);
+    drawLine(img, centerX, centerY + size * 0.04, centerX + size * 0.05, centerY + size * 0.35, Math.max(2, 2 * scale), 0x6A442AFF);
     return;
   }
 
@@ -369,14 +397,16 @@ function drawFallbackIcon(img: any, item: ItemModel, x: number, y: number, size:
   }
 
   if (material.includes('POTION') || material.includes('BOTTLE')) {
-    drawRect(img, x + size * 0.38, y + size * 0.12, size * 0.24, size * 0.22, 0xD0E8F2AA);
-    drawRect(img, x + size * 0.25, y + size * 0.34, size * 0.5, size * 0.5, base);
-    drawRect(img, x + size * 0.31, y + size * 0.42, size * 0.38, size * 0.18, light);
+    drawRect(img, x + size * 0.35, y + size * 0.08, size * 0.3, size * 0.24, 0xD0E8F2FF);
+    drawRect(img, x + size * 0.22, y + size * 0.32, size * 0.56, size * 0.5, base);
+    drawRect(img, x + size * 0.28, y + size * 0.38, size * 0.44, size * 0.22, light);
+    drawRect(img, x + size * 0.31, y + size * 0.42, size * 0.38, Math.max(1, scale), darker);
     return;
   }
 
   if (material.includes('HEAD') || material.includes('SKULL')) {
     drawRect(img, x + size * 0.18, y + size * 0.16, size * 0.64, size * 0.64, base);
+    drawRect(img, x + size * 0.18, y + size * 0.16, size * 0.64, Math.max(1, 2 * scale), light);
     drawRect(img, x + size * 0.28, y + size * 0.35, size * 0.12, size * 0.12, dark);
     drawRect(img, x + size * 0.6, y + size * 0.35, size * 0.12, size * 0.12, dark);
     drawRect(img, x + size * 0.38, y + size * 0.62, size * 0.24, Math.max(2, 2 * scale), dark);
@@ -386,11 +416,15 @@ function drawFallbackIcon(img: any, item: ItemModel, x: number, y: number, size:
   if (material.includes('GLASS_PANE')) {
     drawRect(img, x + size * 0.42, y + size * 0.08, size * 0.16, size * 0.84, light);
     drawRect(img, x + size * 0.18, y + size * 0.42, size * 0.64, size * 0.16, light);
+    drawRect(img, x + size * 0.44, y + size * 0.1, Math.max(1, scale), size * 0.8, darker);
+    drawRect(img, x + size * 0.2, y + size * 0.44, size * 0.6, Math.max(1, scale), darker);
     return;
   }
 
   if (material.includes('GLASS')) {
     drawRect(img, x + size * 0.12, y + size * 0.12, size * 0.76, size * 0.76, light);
+    drawRect(img, x + size * 0.15, y + size * 0.15, size * 0.7, Math.max(1, scale), lighter);
+    drawRect(img, x + size * 0.15, y + size * 0.15, Math.max(1, scale), size * 0.7, lighter);
     return;
   }
 
@@ -468,11 +502,44 @@ function textureCandidates(root: string, normalizedMaterial: string): string[] {
   ];
 }
 
-function slotToPixels(col: number, row: number, padding: number, titleBar: number, slotSize: number, gap: number) {
+function slotToPixels(col: number, row: number, padding: number, titleHeight: number, titleBar: number, slotSize: number, gap: number) {
   return {
     x: padding + col * (slotSize + gap),
-    y: padding + titleBar + row * (slotSize + gap),
+    y: padding + titleHeight + titleBar + row * (slotSize + gap),
   };
+}
+
+function shouldRenderHeader(title: string): boolean {
+  const trimmed = title.trim();
+  return trimmed.length > 0 && trimmed.toLowerCase() !== 'untitled';
+}
+
+function getHeaderHeight(gui: GUIModel, scale: number): number {
+  return shouldRenderHeader(gui.title) ? TITLE_HEIGHT_BASE * scale : 0;
+}
+
+function drawRoundedRect(img: any, x: number, y: number, w: number, h: number, radius: number, color: number) {
+  const startX = Math.round(x);
+  const startY = Math.round(y);
+  const width = Math.max(0, Math.round(w));
+  const height = Math.max(0, Math.round(h));
+  const r = Math.max(0, Math.round(Math.min(radius, width / 2, height / 2)));
+
+  for (let dy = 0; dy < height; dy++) {
+    for (let dx = 0; dx < width; dx++) {
+      const cornerX = dx < r ? r : dx >= width - r ? width - r - 1 : dx;
+      const cornerY = dy < r ? r : dy >= height - r ? height - r - 1 : dy;
+      const distX = dx - cornerX;
+      const distY = dy - cornerY;
+      if (distX * distX + distY * distY <= r * r) {
+        const px = startX + dx;
+        const py = startY + dy;
+        if (px >= 0 && py >= 0 && px < img.bitmap.width && py < img.bitmap.height) {
+          img.setPixelColor(color, px, py);
+        }
+      }
+    }
+  }
 }
 
 function drawRect(img: any, x: number, y: number, w: number, h: number, color: number) {
@@ -492,6 +559,22 @@ function drawRect(img: any, x: number, y: number, w: number, h: number, color: n
   }
 }
 
+function resizeNearest(source: any, width: number, height: number): any {
+  const target = new Jimp({ width, height, color: 0x00000000 });
+  const srcWidth = source.bitmap.width;
+  const srcHeight = source.bitmap.height;
+
+  for (let y = 0; y < height; y++) {
+    const srcY = Math.min(srcHeight - 1, Math.floor((y * srcHeight) / height));
+    for (let x = 0; x < width; x++) {
+      const srcX = Math.min(srcWidth - 1, Math.floor((x * srcWidth) / width));
+      target.setPixelColor(source.getPixelColor(srcX, srcY), x, y);
+    }
+  }
+
+  return target;
+}
+
 function drawLine(img: any, x1: number, y1: number, x2: number, y2: number, thickness: number, color: number) {
   const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
   if (steps === 0) {
@@ -506,10 +589,11 @@ function drawLine(img: any, x1: number, y1: number, x2: number, y2: number, thic
 }
 
 function drawBlock(img: any, x: number, y: number, size: number, base: number, dark: number, light: number) {
-  drawRect(img, x + size * 0.18, y + size * 0.18, size * 0.62, size * 0.62, base);
-  drawRect(img, x + size * 0.18, y + size * 0.18, size * 0.62, size * 0.12, light);
-  drawRect(img, x + size * 0.68, y + size * 0.18, size * 0.12, size * 0.62, dark);
-  drawRect(img, x + size * 0.18, y + size * 0.68, size * 0.62, size * 0.12, dark);
+  drawRect(img, x + size * 0.15, y + size * 0.15, size * 0.7, size * 0.7, base);
+  drawRect(img, x + size * 0.15, y + size * 0.15, size * 0.7, Math.max(1, 2), light);
+  drawRect(img, x + size * 0.15, y + size * 0.15, Math.max(1, 2), size * 0.7, light);
+  drawRect(img, x + size * 0.8, y + size * 0.15, Math.max(1, 2), size * 0.7, dark);
+  drawRect(img, x + size * 0.15, y + size * 0.8, size * 0.7, Math.max(1, 2), dark);
 }
 
 function drawDiamond(img: any, x: number, y: number, size: number, base: number, dark: number, light: number) {
@@ -518,9 +602,10 @@ function drawDiamond(img: any, x: number, y: number, size: number, base: number,
     const halfWidth = size / 2 - Math.abs(row - size / 2);
     drawRect(img, cx - halfWidth, y + row, halfWidth * 2, 1, base);
   }
-  drawLine(img, x + size * 0.5, y, x + size, y + size * 0.5, 1, light);
-  drawLine(img, x, y + size * 0.5, x + size * 0.5, y + size, 1, dark);
-  drawLine(img, x + size, y + size * 0.5, x + size * 0.5, y + size, 1, dark);
+  drawLine(img, x + size * 0.5, y, x + size, y + size * 0.5, 2, light);
+  drawLine(img, x, y + size * 0.5, x + size * 0.5, y + size, 2, dark);
+  drawLine(img, x + size, y + size * 0.5, x + size * 0.5, y + size, 2, dark);
+  drawLine(img, x + size * 0.5, y + size * 0.05, x + size * 0.95, y + size * 0.5, 1, shadeColor(light, 30));
 }
 
 function drawGlint(img: any, x: number, y: number, size: number, scale: number) {

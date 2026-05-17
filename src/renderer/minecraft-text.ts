@@ -84,10 +84,11 @@ export async function drawMinecraftTextLine(
   x: number,
   y: number,
   text: string,
-  color = '#FFFFFF'
+  color = '#FFFFFF',
+  textScale = 1
 ): Promise<number> {
   const font = await WHITE_FONT;
-  return drawStyledSegments(image, x, y, parseMinecraftText(text, color), font);
+  return drawStyledSegments(image, x, y, parseMinecraftText(text, color), font, textScale);
 }
 
 export async function drawMinecraftTextBlock(
@@ -113,18 +114,24 @@ export async function measureMinecraftTextWidth(text: string): Promise<number> {
   return measureText(font, stripMinecraftFormatting(text));
 }
 
-async function drawStyledSegments(image: any, x: number, y: number, segments: StyledTextSegment[], font: Awaited<typeof WHITE_FONT>): Promise<number> {
+async function drawStyledSegments(image: any, x: number, y: number, segments: StyledTextSegment[], font: Awaited<typeof WHITE_FONT>, textScale = 1): Promise<number> {
   let cursorX = x;
+  const safeScale = Math.max(1, Math.round(textScale));
   for (const segment of segments) {
     if (!segment.text) continue;
     const segmentWidth = Math.max(1, Math.ceil(measureText(font, segment.text)));
     const layer = new Jimp({ width: segmentWidth, height: font.common.lineHeight, color: 0x00000000 });
     layer.print({ font, x: 0, y: 0, text: segment.text });
     tintTextLayer(layer, segment.color);
-    image.composite(layer, cursorX, y);
-    cursorX += segmentWidth;
+    const drawnLayer = safeScale > 1 ? resizeSmooth(layer, segmentWidth * safeScale, font.common.lineHeight * safeScale) : layer;
+    image.composite(drawnLayer, cursorX, y);
+    cursorX += segmentWidth * safeScale;
   }
   return cursorX - x;
+}
+
+function resizeSmooth(source: any, width: number, height: number): any {
+  return source.clone().resize({ w: width, h: height });
 }
 
 function tintTextLayer(layer: any, color: string) {
