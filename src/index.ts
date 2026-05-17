@@ -43,8 +43,13 @@ const renderCommonShape = {
 };
 
 const projectGuiShape = {
-  projectRoot: z.string().describe('Root of the project to read from'),
-  sourceFile: z.string().describe('Project-relative or absolute Java source file containing the GUI code'),
+  projectRoot: z.string().optional().describe('Optional root directory to read from when inline content is not provided'),
+  sourceFile: z.string().optional().describe('Project-relative or absolute Java source file path, or key into files/supportFiles'),
+  code: z.string().optional().describe('Inline Java source code to render. Preferred for remote MCP clients.'),
+  files: z.record(z.string(), z.string()).optional().describe('Inline support files keyed by project-relative path. If sourceFile matches a key, that file is rendered.'),
+  supportFiles: z.record(z.string(), z.string()).optional().describe('Alias for files: additional inline files keyed by project-relative path'),
+  langFileContent: z.string().optional().describe('Inline lang.yml content to use for lang.* substitutions'),
+  langYaml: z.string().optional().describe('Alias for langFileContent'),
   className: z.string().optional().describe('Fully qualified class name to render'),
   methodName: z.string().optional().describe('Static method or entry point to render'),
   entryMethod: z.string().optional().describe('Entry method hint for the GUI'),
@@ -116,11 +121,96 @@ function mergeFixtures(...candidates: Array<unknown>): Record<string, unknown> |
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
+function stripYamlQuotes(value: string): string {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function parseSimpleLangYaml(content: string): Record<string, string | string[]> {
+  const result: Record<string, string | string[]> = {};
+  const stack: Array<{ indent: number; key: string }> = [];
+  let currentListKey: string | undefined;
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const withoutComment = rawLine.replace(/\s+#.*$/, '');
+    if (!withoutComment.trim()) continue;
+
+    const indent = withoutComment.match(/^\s*/)?.[0].length ?? 0;
+    const trimmed = withoutComment.trim();
+
+    while (stack.length > 0 && indent <= stack[stack.length - 1].indent) stack.pop();
+
+    if (trimmed.startsWith('- ') && currentListKey) {
+      const value = stripYamlQuotes(trimmed.slice(2));
+      const existing = result[currentListKey];
+      if (Array.isArray(existing)) existing.push(value);
+      continue;
+    }
+
+    const separator = trimmed.indexOf(':');
+    if (separator === -1) continue;
+
+    const key = stripYamlQuotes(trimmed.slice(0, separator));
+    const value = trimmed.slice(separator + 1).trim();
+    const fullKey = [...stack.map((entry) => entry.key), key].join('.');
+
+    if (!value) {
+      stack.push({ indent, key });
+      result[fullKey] = [];
+      currentListKey = fullKey;
+      continue;
+    }
+
+    currentListKey = undefined;
+    if (value.startsWith('[') && value.endsWith(']')) {
+      result[fullKey] = value.slice(1, -1).split(',').map((part) => stripYamlQuotes(part)).filter(Boolean);
+    } else {
+      result[fullKey] = stripYamlQuotes(value);
+    }
+  }
+
+  for (const [key, value] of Object.entries(result)) {
+    if (Array.isArray(value) && value.length === 0) delete result[key];
+  }
+
+  return result;
+}
+
+function findInlineFile(files: Record<string, string> | undefined, sourceFile: string | undefined): { path: string; content: string } | undefined {
+  if (!files) return undefined;
+  if (sourceFile && Object.prototype.hasOwnProperty.call(files, sourceFile)) return { path: sourceFile, content: files[sourceFile] };
+  if (sourceFile) {
+    const normalizedSource = sourceFile.replace(/\\/g, '/');
+    const match = Object.entries(files).find(([candidate]) => {
+      const normalizedCandidate = candidate.replace(/\\/g, '/');
+      return normalizedCandidate === normalizedSource || normalizedCandidate.endsWith(`/${normalizedSource}`) || normalizedSource.endsWith(`/${normalizedCandidate}`);
+    });
+    if (match) return { path: match[0], content: match[1] };
+  }
+  const javaFile = Object.entries(files).find(([candidate]) => candidate.toLowerCase().endsWith('.java'));
+  return javaFile ? { path: javaFile[0], content: javaFile[1] } : undefined;
+}
+
+function findInlineLangContent(input: { langFileContent?: string; langYaml?: string; files?: Record<string, string>; supportFiles?: Record<string, string> }): string | undefined {
+  if (input.langFileContent) return input.langFileContent;
+  if (input.langYaml) return input.langYaml;
+  const files = { ...(input.supportFiles ?? {}), ...(input.files ?? {}) };
+  const match = Object.entries(files).find(([candidate]) => /(^|[/\\])lang\.ya?ml$/i.test(candidate));
+  return match?.[1];
+}
+
 function buildGuiFromInput(input: {
   code?: string;
   matrix?: MatrixSpec;
   projectRoot?: string;
   sourceFile?: string;
+  files?: Record<string, string>;
+  supportFiles?: Record<string, string>;
+  langFileContent?: string;
+  langYaml?: string;
   className?: string;
   methodName?: string;
   entryMethod?: string;
@@ -135,26 +225,32 @@ function buildGuiFromInput(input: {
     };
   }
 
-  if (input.projectRoot && input.sourceFile) {
-    const source = readSourceFile(input.projectRoot, input.sourceFile);
+  const inlineFiles = { ...(input.supportFiles ?? {}), ...(input.files ?? {}) };
+  const inlineFile = findInlineFile(Object.keys(inlineFiles).length > 0 ? inlineFiles : undefined, input.sourceFile);
+  const source = input.code ?? inlineFile?.content ?? (input.projectRoot && input.sourceFile ? readSourceFile(input.projectRoot, input.sourceFile) : undefined);
+
+  if (source) {
     const fixturePreset = typeof input.fixture === 'string' ? loadFixturePreset(input.fixture, input.projectRoot) : undefined;
-    const fixtures = mergeFixtures(fixturePreset, input.fixture, input.fixtures, input.mockParameters);
+    const langContent = findInlineLangContent(input);
+    const langFixture = langContent ? { lang: parseSimpleLangYaml(langContent) } : undefined;
+    const fixtures = mergeFixtures(fixturePreset, langFixture, input.fixture, input.fixtures, input.mockParameters);
     const processed = applyFixtureSubstitutions(source, fixtures);
     const parsed = extractIFModel(processed);
-    const notes = [`Loaded ${input.sourceFile} from ${path.resolve(input.projectRoot)}.`];
+    const notes: string[] = [];
+
+    if (input.code) notes.push('Rendered from inline code.');
+    else if (inlineFile) notes.push(`Rendered from inline file: ${inlineFile.path}`);
+    else if (input.projectRoot && input.sourceFile) notes.push(`Loaded ${input.sourceFile} from ${path.resolve(input.projectRoot)}.`);
+
     if (typeof input.fixture === 'string') {
       notes.push(fixturePreset ? `Loaded fixture preset: ${input.fixture}` : `Fixture preset not found, using as hint only: ${input.fixture}`);
     }
+    if (langContent) notes.push('Loaded inline lang.yml substitutions.');
     if (fixtures) notes.push('Applied fixture substitutions.');
     if (parsed.issues.length > 0) notes.push(`Parse hints: ${parsed.issues.length}`);
     if (input.className) notes.push(`Class hint: ${input.className}`);
     if (input.methodName || input.entryMethod) notes.push(`Entry method hint: ${input.methodName ?? input.entryMethod}`);
     return { gui: parsed.gui, notes, source: processed };
-  }
-
-  if (input.code) {
-    const parsed = extractIFModel(input.code);
-    return { gui: parsed.gui, notes: parsed.issues.length > 0 ? [`Parse hints: ${parsed.issues.length}`] : [] , source: input.code };
   }
 
   return { gui: null, notes: [] };

@@ -263,14 +263,34 @@ The response includes:
 
 ### `render_project_gui`
 
-Renders a GUI from a project source file.
+Renders a GUI from a project source file or inline source content. For remote MCP deployments, prefer `code` or `files`/`supportFiles` so the server does not need access to the client filesystem.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `projectRoot` | string | Project root directory |
-| `sourceFile` | string | Java source file to read |
+| `code` | string | Inline Java source code to render |
+| `files` / `supportFiles` | object | Additional inline files keyed by project-relative path; if `sourceFile` matches a key, that file is rendered |
+| `sourceFile` | string | Java source path/key to render; optional when `code` is provided |
+| `projectRoot` | string | Optional project root directory used only as a filesystem fallback |
+| `langFileContent` / `langYaml` | string | Inline `lang.yml` content used for `lang.*` substitutions |
 | `entryMethod` | string | Optional hint for the GUI entry point |
 | `fixtures` | object | Fixture substitutions for `lang` and direct text replacements |
+
+Remote-friendly example:
+
+```json
+{
+  "sourceFile": "gui/src/main/java/com/example/MyHousesGui.java",
+  "files": {
+    "gui/src/main/java/com/example/MyHousesGui.java": "...Java source...",
+    "worlds/src/main/resources/lang.yml": "...lang content..."
+  },
+  "fixture": {
+    "type": "my-houses",
+    "houses": []
+  },
+  "scale": 3
+}
+```
 
 ### `inspect_gui_slot`
 
