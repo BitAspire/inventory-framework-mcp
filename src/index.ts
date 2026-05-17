@@ -34,13 +34,24 @@ const renderMatrixSchema = z.object({
   legend: z.record(renderMatrixLegendItemSchema),
 });
 
-const renderCommonSchema = z.object({
-  scale: z.number().min(1).max(4).optional(),
-  texturePath: z.string().optional(),
-  outputPath: z.string().optional(),
-  hoverSlot: z.object({ x: z.number().int(), y: z.number().int() }).optional(),
-  showTooltip: z.boolean().optional(),
-});
+const renderCommonShape = {
+  scale: z.number().min(1).max(4).optional().describe('Scale factor for the output image (1-4)'),
+  texturePath: z.string().optional().describe('Optional path to a Minecraft resource pack or texture folder'),
+  outputPath: z.string().optional().describe('Optional output PNG path'),
+  hoverSlot: z.object({ x: z.number().int(), y: z.number().int() }).optional().describe('Optional slot to show a tooltip for'),
+  showTooltip: z.boolean().optional().describe('Whether to render tooltip for hoverSlot'),
+};
+
+const projectGuiShape = {
+  projectRoot: z.string().describe('Root of the project to read from'),
+  sourceFile: z.string().describe('Project-relative or absolute Java source file containing the GUI code'),
+  className: z.string().optional().describe('Fully qualified class name to render'),
+  methodName: z.string().optional().describe('Static method or entry point to render'),
+  entryMethod: z.string().optional().describe('Entry method hint for the GUI'),
+  fixture: z.union([z.string(), z.record(z.string(), z.any())]).optional().describe('Fixture name or inline mock data'),
+  fixtures: z.record(z.string(), z.any()).optional().describe('Fixture data such as lang and replacements'),
+  mockParameters: z.record(z.string(), z.any()).optional().describe('Alias for fixture data'),
+};
 
 function readSourceFile(projectRoot: string, sourceFile: string): string {
   const root = path.resolve(projectRoot);
@@ -80,8 +91,28 @@ function applyFixtureSubstitutions(source: string, fixtures: any): string {
   return result;
 }
 
-function mergeFixtures(...candidates: Array<Record<string, unknown> | undefined>): Record<string, unknown> | undefined {
-  const merged = candidates.filter(Boolean).reduce<Record<string, unknown>>((acc, current) => ({ ...acc, ...current }), {});
+function loadFixturePreset(name: string, projectRoot?: string): Record<string, unknown> | undefined {
+  const safeName = name.endsWith('.json') ? name : `${name}.json`;
+  const candidates = [
+    projectRoot ? path.resolve(projectRoot, 'mcp-fixtures', safeName) : undefined,
+    projectRoot ? path.resolve(projectRoot, '.mcp', 'fixtures', safeName) : undefined,
+    path.resolve(getResourcesDir(), 'fixtures', safeName),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    const parsed = JSON.parse(fs.readFileSync(candidate, 'utf-8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+  }
+
+  return undefined;
+}
+
+function mergeFixtures(...candidates: Array<unknown>): Record<string, unknown> | undefined {
+  const records = candidates.filter((candidate): candidate is Record<string, unknown> => {
+    return Boolean(candidate) && typeof candidate === 'object' && !Array.isArray(candidate);
+  });
+  const merged = records.reduce<Record<string, unknown>>((acc, current) => ({ ...acc, ...current }), {});
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
@@ -90,7 +121,10 @@ function buildGuiFromInput(input: {
   matrix?: MatrixSpec;
   projectRoot?: string;
   sourceFile?: string;
+  className?: string;
+  methodName?: string;
   entryMethod?: string;
+  fixture?: string | Record<string, unknown>;
   fixtures?: Record<string, unknown>;
   mockParameters?: Record<string, unknown>;
 }): { gui: GUIModel | null; notes: string[]; source?: string } {
@@ -103,13 +137,18 @@ function buildGuiFromInput(input: {
 
   if (input.projectRoot && input.sourceFile) {
     const source = readSourceFile(input.projectRoot, input.sourceFile);
-    const fixtures = mergeFixtures(input.fixtures, input.mockParameters);
+    const fixturePreset = typeof input.fixture === 'string' ? loadFixturePreset(input.fixture, input.projectRoot) : undefined;
+    const fixtures = mergeFixtures(fixturePreset, input.fixture, input.fixtures, input.mockParameters);
     const processed = applyFixtureSubstitutions(source, fixtures);
     const parsed = extractIFModel(processed);
     const notes = [`Loaded ${input.sourceFile} from ${path.resolve(input.projectRoot)}.`];
+    if (typeof input.fixture === 'string') {
+      notes.push(fixturePreset ? `Loaded fixture preset: ${input.fixture}` : `Fixture preset not found, using as hint only: ${input.fixture}`);
+    }
     if (fixtures) notes.push('Applied fixture substitutions.');
     if (parsed.issues.length > 0) notes.push(`Parse hints: ${parsed.issues.length}`);
-    if (input.entryMethod) notes.push(`Entry method hint: ${input.entryMethod}`);
+    if (input.className) notes.push(`Class hint: ${input.className}`);
+    if (input.methodName || input.entryMethod) notes.push(`Entry method hint: ${input.methodName ?? input.entryMethod}`);
     return { gui: parsed.gui, notes, source: processed };
   }
 
@@ -134,9 +173,9 @@ function createServer(): McpServer {
     'validate_if_code',
     {
       description: 'Validate IF (Inventory Framework) Java GUI code for syntax errors, layout issues, and best practices.',
-      inputSchema: z.object({
+      inputSchema: {
         code: z.string().describe('Java source code containing IF GUI definitions'),
-      }),
+      },
     },
     async ({ code }) => {
       const parsed = extractIFModel(code);
@@ -163,12 +202,11 @@ function createServer(): McpServer {
     'render_gui',
     {
       description: 'Render a GUI screenshot from IF Java code or a slot matrix. Returns a PNG image plus file metadata.',
-      inputSchema: renderCommonSchema.extend({
+      inputSchema: {
+        ...renderCommonShape,
         code: z.string().optional().describe('Java source code containing IF GUI definitions'),
         matrix: renderMatrixSchema.optional().describe('Matrix-based GUI layout specification'),
-      }).refine((data) => Boolean(data.code || data.matrix), {
-        message: 'Provide either code or matrix',
-      }),
+      },
     },
     async (input) => {
       const built = buildGuiFromInput(input);
@@ -195,11 +233,17 @@ function createServer(): McpServer {
           meta.fallbackItems.length > 0 ? `Fallback icons: ${meta.fallbackItems.join(', ')}` : undefined,
           meta.unknownMaterials.length > 0 ? `Unknown atlas materials: ${meta.unknownMaterials.join(', ')}` : undefined,
         ].filter(Boolean).join('\n');
+        const warnings = validateGUIModel(built.gui).filter((issue) => issue.severity !== 'error').map((issue) => issue.message);
         const metadata = {
           imagePath: meta.imagePath,
+          title: meta.title,
+          rows: meta.rows,
+          columns: meta.columns,
           width: meta.width,
           height: meta.height,
+          renderedItems: meta.renderedItems,
           unknownMaterials: meta.unknownMaterials,
+          warnings,
           slots: meta.slots,
         };
         return {
@@ -225,13 +269,10 @@ function createServer(): McpServer {
     'render_project_gui',
     {
       description: 'Render a GUI from a project source file with optional fixture substitutions.',
-      inputSchema: z.object({
-        projectRoot: z.string().describe('Root of the project to read from'),
-        sourceFile: z.string().describe('Project-relative or absolute Java source file'),
-        entryMethod: z.string().optional().describe('Entry method hint for the GUI'),
-        fixtures: z.record(z.string(), z.any()).optional().describe('Fixture data such as lang and replacements'),
-        mockParameters: z.record(z.string(), z.any()).optional().describe('Alias for fixture data'),
-      }).and(renderCommonSchema),
+      inputSchema: {
+        ...projectGuiShape,
+        ...renderCommonShape,
+      },
     },
     async (input) => {
       const built = buildGuiFromInput(input);
@@ -250,16 +291,24 @@ function createServer(): McpServer {
       });
 
       const meta = rendered.metadata;
+      const warnings = validateGUIModel(built.gui).filter((issue) => issue.severity !== 'error').map((issue) => issue.message);
       const notes = [
         ...(built.notes.length > 0 ? built.notes : []),
-        `Rendered ${meta.guiType} GUI "${meta.title}" (${meta.columns}x${meta.rows}).`,
+        `Rendered ${meta.guiType} GUI "${meta.title}" (${meta.columns}x${meta.rows}) with ${meta.renderedItems} item(s).`,
         `Saved preview: ${meta.imagePath}`,
-      ].join('\n');
+        meta.unknownMaterials.length > 0 ? `Unknown atlas materials: ${meta.unknownMaterials.join(', ')}` : undefined,
+        warnings.length > 0 ? `Warnings: ${warnings.length}` : undefined,
+      ].filter(Boolean).join('\n');
       const metadata = {
         imagePath: meta.imagePath,
+        title: meta.title,
+        rows: meta.rows,
+        columns: meta.columns,
         width: meta.width,
         height: meta.height,
+        renderedItems: meta.renderedItems,
         unknownMaterials: meta.unknownMaterials,
+        warnings,
         slots: meta.slots,
       };
 
@@ -277,14 +326,14 @@ function createServer(): McpServer {
     'inspect_gui_slot',
     {
       description: 'Inspect the effective item and contributors for a GUI slot.',
-      inputSchema: renderCommonSchema.extend({
+      inputSchema: {
+        ...projectGuiShape,
+        ...renderCommonShape,
         code: z.string().optional().describe('Java source code containing IF GUI definitions'),
         matrix: renderMatrixSchema.optional().describe('Matrix-based GUI layout specification'),
         x: z.number().int().describe('Slot column'),
         y: z.number().int().describe('Slot row'),
-      }).refine((data) => Boolean(data.code || data.matrix), {
-        message: 'Provide either code or matrix',
-      }),
+      },
     },
     async (input) => {
       const built = buildGuiFromInput(input);
@@ -333,9 +382,9 @@ function createServer(): McpServer {
     'analyze_layout',
     {
       description: 'Analyze the UI/UX layout of an IF GUI and suggest improvements.',
-      inputSchema: z.object({
+      inputSchema: {
         code: z.string().describe('Java source code containing IF GUI definitions'),
-      }),
+      },
     },
     async ({ code }) => {
       const parsed = extractIFModel(code);
@@ -356,9 +405,9 @@ function createServer(): McpServer {
     'list_items',
     {
       description: 'List known Minecraft items available in the item atlas. Useful for referencing correct Material names.',
-      inputSchema: z.object({
+      inputSchema: {
         query: z.string().optional().describe('Optional prefix filter for item names'),
-      }),
+      },
     },
     async ({ query }) => {
       const entries = getItemAtlasEntries(query);
@@ -373,9 +422,9 @@ function createServer(): McpServer {
     'get_if_docs',
     {
       description: 'Get IF (Inventory Framework) documentation for a specific topic.',
-      inputSchema: z.object({
+      inputSchema: {
         topic: z.string().describe('Topic name, e.g. gui, panes, outline_pane, static_pane, gui_item, xml'),
-      }),
+      },
     },
     async ({ topic }) => {
       const text = ifDocs[topic.toLowerCase()];
